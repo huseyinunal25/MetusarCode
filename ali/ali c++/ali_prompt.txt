@@ -1,0 +1,6 @@
+1- Bu prompta göre şu programı yazdım:     Bu programda C++ dilinde OOP kullanarak ne gibi iyileştirmeler yapabiliriz?
+2- ... konusunda tam bir acemiyim, ancak mümkün olan en kısa sürede uzman seviyesine ulaşmak istiyorum. Temel konular 
+da dahil olmak üzere başlangıç seviyesinden ileri  kadar benim için adım adım bir yol haritası tasarlar mısın?
+
+
+

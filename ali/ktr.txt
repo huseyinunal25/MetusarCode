@@ -1,0 +1,9 @@
+https://github.com/ugurkanates/GTURocketTeam/blob/master/libraries/GTU/Flight.h
+https://github.com/ugurkanates/GTURocketTeam/blob/master/libraries/GTU/Flight.cpp
+
+https://fixaj.com/lora-modulu-ile-gps-kullanimi-irtifa-bilgilerinin-okunmasi/
+
+
+Enlem
+İrtifa
+Ö-UKB test düzeneği ile yapılacak olan bağlantı için seçilen arayüzleri, bağlantı elemanları ve kabloların yapısı bir diyagram ile paylaşılarak kısaca açıklanmalı
