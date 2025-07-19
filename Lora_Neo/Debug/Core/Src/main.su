@@ -1,0 +1,8 @@
+../Core/Src/main.c:69:6:HAL_UART_RxCpltCallback	16	static
+../Core/Src/main.c:87:6:print_gps_data	184	dynamic
+../Core/Src/main.c:119:5:main	32	static
+../Core/Src/main.c:189:6:SystemClock_Config	72	static
+../Core/Src/main.c:229:13:MX_USART2_UART_Init	8	static
+../Core/Src/main.c:262:13:MX_USART3_UART_Init	8	static
+../Core/Src/main.c:295:13:MX_GPIO_Init	24	static
+../Core/Src/main.c:319:6:Error_Handler	4	static,ignoring_inline_asm

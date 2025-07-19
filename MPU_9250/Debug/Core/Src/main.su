@@ -1,0 +1,9 @@
+../Core/Src/main.c:73:5:main	160	static
+../Core/Src/main.c:169:6:SystemClock_Config	72	static
+../Core/Src/main.c:206:13:MX_SPI1_Init	8	static
+../Core/Src/main.c:244:13:MX_TIM2_Init	32	static
+../Core/Src/main.c:292:13:MX_USART1_UART_Init	8	static
+../Core/Src/main.c:326:13:MX_GPIO_Init	32	static
+../Core/Src/main.c:360:6:HAL_TIM_PeriodElapsedCallback	16	static
+../Core/Src/main.c:367:6:mpu9250_veri	24	static
+../Core/Src/main.c:385:6:Error_Handler	4	static,ignoring_inline_asm
