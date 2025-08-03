@@ -1,0 +1,139 @@
+İşte C++ dilinde nesne yönelimli programlama (OOP) ile ilgili **temel seviyede** hazırlanmış **20 farklı problem**. Her bir problemde hem OOP'nin temel yapı
+taşları (class, object, constructor, destructor, inheritance, encapsulation vs.) hem de **akış kontrol yapıları** ve **temel veri tipleri** kullanılmaktadır.
+
+---
+
+### ✅ **C++ OOP Temel Seviye Problemleri (20 Adet)**
+
+#### **1. Sınıf Tanımı ve Nesne Oluşturma**
+
+> Bir `Car` sınıfı tanımlayın. Marka, model ve yıl bilgisi içersin. Bu bilgileri kullanıcıdan alıp ekrana yazan bir program yazın.
+
+---
+
+#### **2. Yapıcı (Constructor) ve Yıkıcı (Destructor) Kullanımı**
+
+> Bir `Book` sınıfı oluşturun. Kitap adı ve yazarı yapıcı fonksiyon ile alınsın. Nesne silindiğinde yıkıcı fonksiyon çalışarak “Kitap silindi” yazsın.
+
+---
+
+#### **3. Getter ve Setter Metotları**
+
+> Bir `Student` sınıfı yazın. `name`, `age` ve `grade` özellikleri olsun. Bu değerler private olsun. Getter ve setter fonksiyonlarıyla değer atama ve 
+erişim sağlayın.
+
+---
+
+#### **4. Birden Fazla Nesne Kullanımı**
+
+> `Rectangle` sınıfı oluşturun. Genişlik ve yükseklik özellikleri olsun. Alanı hesaplayan fonksiyon tanımlayın. 3 farklı dikdörtgen oluşturun ve 
+alanlarını karşılaştırın.
+
+---
+
+#### **5. Sınıf İçinde Koşullu Kontroller**
+
+> Bir `Temperature` sınıfı yazın. Derece cinsinden sıcaklığı tutan bir değişken olsun. Sıcaklık 0’ın altındaysa “Soğuk”, 0–30 arasıysa “Ilık”, 
+30 üstü ise “Sıcak” yazan bir fonksiyon oluşturun.
+
+---
+
+#### **6. Sınıf İçinde Döngü Kullanımı**
+
+> `MultiplicationTable` sınıfı oluşturun. Kullanıcıdan alınan sayıya göre 1’den 10’a kadar çarpım tablosu oluşturan bir fonksiyon yazın.
+
+---
+
+#### **7. Kalıtım (Inheritance) Kullanımı**
+
+> `Animal` adlı bir temel sınıf tanımlayın. `Dog` ve `Cat` sınıfları `Animal` sınıfından türesin. Her alt sınıf kendi `makeSound()` metodunu override etsin.
+
+---
+
+#### **8. Çok Biçimlilik (Polymorphism)**
+
+> Bir `Shape` sınıfı tanımlayın. `draw()` adında bir sanal fonksiyon (virtual) olsun. `Circle` ve `Square` sınıfları bu fonksiyonu farklı şekillerde
+override etsin. Fonksiyonları pointer ile çağırarak çok biçimliliği gösterin.
+
+---
+
+#### **9. Dizi ve OOP**
+
+> `Person` sınıfı oluşturun. 5 kişilik bir dizide kişilerin isim ve yaş bilgilerini tutup en yaşlı kişiyi bulun.
+
+---
+
+#### **10. Switch-Case ile Menülü Sistem**
+
+> `Calculator` sınıfı oluşturun. Toplama, çıkarma, çarpma ve bölme işlemleri yapan fonksiyonlar tanımlayın. Kullanıcıdan işlem türünü switch-case 
+ile alarak uygun fonksiyonu çağırın.
+
+---
+
+#### **11. Static Üyeler**
+
+> Bir `Counter` sınıfı oluşturun. Her oluşturulan nesne sayısını tutan static bir değişken olsun ve her yeni nesne oluştuğunda sayaç artsın.
+
+---
+
+#### **12. Goto ve Label Kullanımı**
+
+> `Login` sınıfı oluşturun. Kullanıcıdan şifre alınsın. Şifre 3 kez yanlış girilirse program sona ersin. Doğru girene kadar goto ile tekrar denetim
+sağlansın.
+
+---
+
+#### **13. Continue ile Döngü Kontrolü**
+
+> `NumberSkipper` sınıfı oluşturun. 1’den 20’ye kadar olan sayıları yazdırın ancak 3’ün katlarını `continue` ile atlayın.
+
+---
+
+#### **14. Do-While ile Tekrar Eden İşlem**
+
+> `MenuSystem` sınıfı oluşturun. Basit bir menü ile kullanıcıdan seçim alıp işlemleri gerçekleştirin. Kullanıcı çıkmak istemediği sürece menü do-while 
+ile tekrar gösterilsin.
+
+---
+
+#### **15. Enum Kullanımı**
+
+> `TrafficLight` adında bir sınıf tanımlayın. Bir `enum` tanımıyla kırmızı, sarı ve yeşil ışıkları temsil edin. Bir fonksiyon bu enum’a göre ışığın 
+ne anlama geldiğini yazdırsın.
+
+---
+
+#### **16. Nested Class (İç İçe Sınıf) Kullanımı**
+
+> `Computer` sınıfı oluşturun. İçerisinde `CPU` adında iç sınıf tanımlayın. CPU frekansını ve çekirdek sayısını tutup dış sınıf tarafından erişim sağlayın.
+
+---
+
+#### **17. Fonksiyon Parametresi Olarak Nesne**
+
+> `Box` sınıfı oluşturun. İki kutunun hacmini karşılaştıran ve büyük olanı döndüren bir fonksiyon yazın. Bu fonksiyon bir `Box` nesnesini parametre olarak
+alsın.
+
+---
+
+#### **18. Vektör ve OOP Kullanımı**
+
+> `Product` sınıfı oluşturun. Kullanıcıdan ürün adı ve fiyat bilgisi alınsın. Ürünler bir `vector` içinde tutulup en pahalı ürün bulunsun.
+
+---
+
+#### **19. Sınıf Üyelerine Fonksiyonla Erişim**
+
+> `Timer` sınıfı oluşturun. Başlangıç ve bitiş zamanlarını tutup, aradaki farkı hesaplayan bir fonksiyon yazın. Kullanıcıdan girişler alınarak hesaplama 
+yapılsın.
+
+---
+
+#### **20. Parametreli Yapıcı ve Nesne Kopyalama**
+
+> `Point` sınıfı oluşturun. x ve y koordinatlarını parametreli kurucu ile alın. Bir `copy()` fonksiyonu ile bu noktayı başka bir nesneye kopyalayın ve 
+koordinatlarını karşılaştırın.
+
+---
+
+İstersen bu sorulardan herhangi birini detaylı çözümlü şekilde açıklayabilirim veya hepsini PDF olarak da hazırlayabilirim. Hangisiyle ilerleyelim?
