@@ -1,0 +1,15 @@
+../Core/Src/main.c:86:5:main	1
+../Core/Src/main.c:130:6:initialize_sensors	1
+../Core/Src/main.c:141:6:read_bme280_data	1
+../Core/Src/main.c:152:6:read_accelerometer_data	1
+../Core/Src/main.c:168:6:read_gyroscope_data	1
+../Core/Src/main.c:184:6:transmit_sensor_packet	1
+../Core/Src/main.c:213:6:mpu9250_read_data	1
+../Core/Src/main.c:233:6:SystemClock_Config	3
+../Core/Src/main.c:270:13:MX_I2C1_Init	2
+../Core/Src/main.c:292:13:MX_SPI1_Init	2
+../Core/Src/main.c:317:13:MX_USART1_UART_Init	2
+../Core/Src/main.c:338:13:MX_USART2_UART_Init	2
+../Core/Src/main.c:359:13:MX_USART3_UART_Init	2
+../Core/Src/main.c:380:13:MX_GPIO_Init	1
+../Core/Src/main.c:403:6:Error_Handler	1
