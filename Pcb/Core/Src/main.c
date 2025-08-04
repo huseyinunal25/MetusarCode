@@ -29,9 +29,12 @@ extern int32_t tRaw, pRaw, hRaw;
 
 /* Private defines -----------------------------------------------------------*/
 #define PACKET_HEADER_SIZE      3
-#define BUFFER_SIZE            100
+#define BUFFER_SIZE            150
 #define IMU_DATA_SIZE          14
 #define MEASUREMENT_DELAY      200
+
+// GPS Debug Configuration - Set to 1 to enable raw NMEA debugging
+#define GPS_DEBUG_RAW_NMEA     0
 
 // Packet configuration
 #define TARGET_ADDR_HIGH       0x00
@@ -102,6 +105,8 @@ void read_gyroscope_data(sensor_data_t *gyro_data);
 void read_bme280_data(void);
 void transmit_sensor_packet(int altitude, float accel_x, float accel_y, float accel_z, float gyro_x, float gyro_y, float gyro_z, float latitude, float longitude);
 void initialize_sensors(void);
+void print_gps_debug_info(void);
+void check_uart_errors(void);
 
 void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation);
 void calculate_simple_orientation(sensor_data_t *accel_data, float *roll, float *pitch);
@@ -114,6 +119,7 @@ lwgps_t gps;
 uint8_t rx_buffer[128];
 uint8_t rx_index = 0;
 uint8_t rx_data = 0;
+uint32_t gps_data_received_count = 0;
 
 /* Private user code ---------------------------------------------------------*/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -124,25 +130,73 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		// Check for end of NMEA sentence (either \n or \r\n)
 		if(rx_data == '\n' || rx_data == '\r'){
 			if(rx_index > 0) {
-			// Null terminate the buffer
+				// Null terminate the buffer
 				rx_buffer[rx_index] = '\0';
 
 				// Process the complete NMEA sentence
-				lwgps_process(&gps, rx_buffer, rx_index);
+				lwgps_statement_t result = lwgps_process(&gps, rx_buffer, rx_index);
+				
+				// Debug print received NMEA sentence if enabled
+				#if GPS_DEBUG_RAW_NMEA
+				HAL_UART_Transmit(&huart1, (uint8_t*)"NMEA: ", 6, 100);
+				HAL_UART_Transmit(&huart1, rx_buffer, rx_index, 100);
+				HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 100);
+				#endif
 
 				// Reset buffer for next sentence
-			rx_index = 0;
+				rx_index = 0;
 			}
 		}
 		else if(rx_index < sizeof(rx_buffer) - 1){
-		// Add character to buffer (leave space for null terminator)
+			// Add character to buffer (leave space for null terminator)
 			rx_buffer[rx_index++] = rx_data;
+			gps_data_received_count++; // Count received characters
 		}
 		else {
 			// Buffer overflow - reset
 			rx_index = 0;
 		}
 	}
+}
+
+/**
+ * @brief Print GPS debug information
+ * @param None
+ * @retval None
+ */
+void print_gps_debug_info(void)
+{
+    char debug_buffer[300];
+    uint16_t len;
+    
+    len = sprintf(debug_buffer, "GPS Debug: Fix=%d, Valid=%d, Sats=%d, FixMode=%d, Lat=%.6f, Lon=%.6f, RxCount=%lu\r\n",
+                  gps.fix, gps.is_valid, gps.sats_in_use, gps.fix_mode, gps.latitude, gps.longitude, gps_data_received_count);
+    
+    HAL_UART_Transmit(&huart1, (uint8_t*)debug_buffer, len, HAL_MAX_DELAY);
+}
+
+/**
+ * @brief Check UART errors and reset if necessary
+ * @param None
+ * @retval None
+ */
+void check_uart_errors(void)
+{
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE)) {
+        // Overrun error - clear flag and restart reception
+        __HAL_UART_CLEAR_OREFLAG(&huart2);
+        HAL_UART_Receive_IT(&huart2, &rx_data, 1);
+    }
+    
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_FE)) {
+        // Framing error - clear flag
+        __HAL_UART_CLEAR_FEFLAG(&huart2);
+    }
+    
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_NE)) {
+        // Noise error - clear flag
+        __HAL_UART_CLEAR_NEFLAG(&huart2);
+    }
 }
 
 
@@ -171,10 +225,15 @@ int main(void)
     /* Variables for sensor data */
     sensor_data_t accel_data;
     sensor_data_t gyro_data;
+    uint32_t debug_counter = 0;
 
     lwgps_init(&gps);
     HAL_UART_Receive_IT(&huart2, &rx_data, 1);
     HAL_Delay(200);
+    
+    // Print initial GPS debug info
+    print_gps_debug_info();
+    
     /* Infinite loop */
     while (1)
     {
@@ -185,15 +244,21 @@ int main(void)
         read_accelerometer_data(&accel_data);
         read_gyroscope_data(&gyro_data);
 
+        // Calculate orientation
+        calculate_orientation(&accel_data, &gyro_data, &orientation);
+
         transmit_sensor_packet(altitude, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z,
                               gps.latitude, gps.longitude);
 
+        // Print GPS debug info every 50 cycles (about every 10 seconds)
+        if (++debug_counter >= 50) {
+            print_gps_debug_info();
+            check_uart_errors(); // Check for UART errors periodically
+            debug_counter = 0;
+        }
+
         // Wait before next measurement
         HAL_Delay(MEASUREMENT_DELAY);
-
-        // Add this after reading sensor data in your main loop:
-        calculate_orientation(&accel_data, &gyro_data, &orientation);
-
     }
 }
 
@@ -261,14 +326,23 @@ void transmit_sensor_packet(int altitude, float accel_x, float accel_y, float ac
     char buffer[BUFFER_SIZE];
     uint16_t len;
 
-    // Format sensor data string
-    len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%f,%f\r\n",
-
-        altitude,
-        accel_x, accel_y, accel_z,
-        orientation.roll, orientation.pitch, orientation.yaw,
-       gps.latitude, gps.longitude
-    );
+    // Check GPS fix status before using coordinates
+    if (gps.fix == 0 || !gps.is_valid) {
+        // GPS has no fix or is invalid - use zero values
+        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,0.000000,0.000000\r\n",
+            altitude,
+            accel_x, accel_y, accel_z,
+            orientation.roll, orientation.pitch, orientation.yaw
+        );
+    } else {
+        // GPS has valid fix - use actual coordinates
+        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%f,%f\r\n",
+            altitude,
+            accel_x, accel_y, accel_z,
+            orientation.roll, orientation.pitch, orientation.yaw,
+            gps.latitude, gps.longitude
+        );
+    }
 
     //orientation.roll, orientation.pitch, orientation.yaw
     // Create packet with header
