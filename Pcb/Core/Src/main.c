@@ -328,21 +328,19 @@ void transmit_sensor_packet(int altitude, float accel_x, float accel_y, float ac
 
     // Check GPS fix status before using coordinates
     if (gps.fix == 0 || !gps.is_valid) {
-        // GPS has no fix or is invalid - use zero values and add status info
-        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,0.000000,0.000000,GPS:NOFIX,SATS:%d\r\n",
+        // GPS has no fix or is invalid - use zero values
+        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,0.000000,0.000000\r\n",
             altitude,
             accel_x, accel_y, accel_z,
-            orientation.roll, orientation.pitch, orientation.yaw,
-            gps.sats_in_use
+            orientation.roll, orientation.pitch, orientation.yaw
         );
     } else {
         // GPS has valid fix - use actual coordinates
-        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%f,%f,GPS:FIX%d,SATS:%d\r\n",
+        len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%f,%f\r\n",
             altitude,
             accel_x, accel_y, accel_z,
             orientation.roll, orientation.pitch, orientation.yaw,
-            gps.latitude, gps.longitude,
-            gps.fix, gps.sats_in_use
+            gps.latitude, gps.longitude
         );
     }
 
