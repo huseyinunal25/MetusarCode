@@ -155,7 +155,7 @@ int BMEReadRaw(void)
 	// Check the chip ID before reading
 	HAL_I2C_Mem_Read(&hi2c1, BME280_ADDRESS, ID_REG, 1, &chipID, 1, 1000);
 
-	if (chipID == 0x60)
+	if (chipID == 0x58)
 	{
 		// Read the Registers 0xF7 to 0xFE
 		HAL_I2C_Mem_Read(BME280_I2C, BME280_ADDRESS, PRESS_MSB_REG, 1, RawData, 8, HAL_MAX_DELAY);

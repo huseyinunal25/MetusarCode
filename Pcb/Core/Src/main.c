@@ -23,7 +23,7 @@
 #include "BME280_STM32.h"
 #include <stdio.h>
 #include <string.h>
-
+#include "lwgps/lwgps.h"
 /* External Variables --------------------------------------------------------*/
 extern int32_t tRaw, pRaw, hRaw;
 
@@ -42,12 +42,29 @@ extern int32_t tRaw, pRaw, hRaw;
 #define MPU9250_ACCEL_XOUT_H   59
 #define MPU9250_GYRO_XOUT_H    67
 
+// Add these defines for accelerometer scaling
+#define ACCEL_SCALE_FACTOR  16384.0f  // For ±2g range
+#define GYRO_SCALE_FACTOR   131.0f    // For ±250°/s range
+#define RAD_TO_DEG          57.2958f
+#define DEG_TO_RAD          0.0174533f
+
 /* Private typedef -----------------------------------------------------------*/
 typedef struct {
     int16_t x;
     int16_t y;
     int16_t z;
 } sensor_data_t;
+
+// Structure for orientation angles
+typedef struct {
+    float roll;     // Rotation around X-axis
+    float pitch;    // Rotation around Y-axis
+    float yaw;      // Rotation around Z-axis (requires magnetometer for absolute)
+} orientation_t;
+
+// Global variables for orientation calculation
+static orientation_t orientation = {0};
+static uint32_t last_time = 0;
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
@@ -60,6 +77,14 @@ UART_HandleTypeDef huart3;
 float Temperature, Pressure, altitude;
 static float previous_altitude = 0;
 
+float gyro_x;
+float gyro_y;
+float gyro_z;
+
+float accel_x;
+float accel_y;
+float accel_z;
+
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -70,19 +95,62 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 
 // Custom function prototypes
+
 void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t data_length);
 void read_accelerometer_data(sensor_data_t *accel_data);
 void read_gyroscope_data(sensor_data_t *gyro_data);
 void read_bme280_data(void);
-void transmit_sensor_packet(int altitude, sensor_data_t *accel_data, sensor_data_t *gyro_data);
+void transmit_sensor_packet(int altitude, float accel_x, float accel_y, float accel_z, float gyro_x, float gyro_y, float gyro_z, float latitude, float longitude);
 void initialize_sensors(void);
 
+void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation);
+void calculate_simple_orientation(sensor_data_t *accel_data, float *roll, float *pitch);
+
+orientation_t get_orientation(void);
+uint8_t is_system_level(float tolerance);
+
+lwgps_t gps;
+
+uint8_t rx_buffer[128];
+uint8_t rx_index = 0;
+uint8_t rx_data = 0;
+
 /* Private user code ---------------------------------------------------------*/
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart == &huart2){
+		HAL_UART_Receive_IT(&huart2, &rx_data, 1);
+
+		// Check for end of NMEA sentence (either \n or \r\n)
+		if(rx_data == '\n' || rx_data == '\r'){
+			if(rx_index > 0) {
+			// Null terminate the buffer
+				rx_buffer[rx_index] = '\0';
+
+				// Process the complete NMEA sentence
+				lwgps_process(&gps, rx_buffer, rx_index);
+
+				// Reset buffer for next sentence
+			rx_index = 0;
+			}
+		}
+		else if(rx_index < sizeof(rx_buffer) - 1){
+		// Add character to buffer (leave space for null terminator)
+			rx_buffer[rx_index++] = rx_data;
+		}
+		else {
+			// Buffer overflow - reset
+			rx_index = 0;
+		}
+	}
+}
+
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
+
 int main(void)
 {
     /* MCU Configuration */
@@ -104,6 +172,9 @@ int main(void)
     sensor_data_t accel_data;
     sensor_data_t gyro_data;
 
+    lwgps_init(&gps);
+    HAL_UART_Receive_IT(&huart2, &rx_data, 1);
+    HAL_Delay(200);
     /* Infinite loop */
     while (1)
     {
@@ -114,11 +185,15 @@ int main(void)
         read_accelerometer_data(&accel_data);
         read_gyroscope_data(&gyro_data);
 
-        // Transmit accelerometer data via UART
-        transmit_sensor_packet(altitude, &accel_data, &gyro_data);
+        transmit_sensor_packet(altitude, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z,
+                              gps.latitude, gps.longitude);
 
         // Wait before next measurement
         HAL_Delay(MEASUREMENT_DELAY);
+
+        // Add this after reading sensor data in your main loop:
+        calculate_orientation(&accel_data, &gyro_data, &orientation);
+
     }
 }
 
@@ -181,17 +256,21 @@ void read_gyroscope_data(sensor_data_t *gyro_data)
   * @param accel_data: Pointer to accelerometer data structure
   * @retval None
   */
-void transmit_sensor_packet(int altitude, sensor_data_t *accel_data, sensor_data_t *gyro_data)
+void transmit_sensor_packet(int altitude, float accel_x, float accel_y, float accel_z, float gyro_x, float gyro_y, float gyro_z, float latitude, float longitude)
 {
     char buffer[BUFFER_SIZE];
     uint16_t len;
 
     // Format sensor data string
-    len = sprintf(buffer, "%d,%d,%d,%d,%.2f,%.2f,%.2f\r\n",
-    			  altitude,
-                  accel_data->x, accel_data->y, accel_data->z,
-				  gyro_data->x/131.0, gyro_data->y/131.0, gyro_data->z/131.0);
+    len = sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%f,%f\r\n",
 
+        altitude,
+        accel_x, accel_y, accel_z,
+        orientation.roll, orientation.pitch, orientation.yaw,
+       gps.latitude, gps.longitude
+    );
+
+    //orientation.roll, orientation.pitch, orientation.yaw
     // Create packet with header
     uint8_t packet[PACKET_HEADER_SIZE + len];
     packet[0] = TARGET_ADDR_HIGH;
@@ -267,6 +346,7 @@ void SystemClock_Config(void)
   * @param None
   * @retval None
   */
+
 static void MX_I2C1_Init(void)
 {
     hi2c1.Instance = I2C1;
@@ -395,6 +475,140 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
+
+//////////////////////
+
+void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation)
+{
+    // Convert raw accelerometer data to g-force
+    accel_x = (float)accel_data->x / ACCEL_SCALE_FACTOR;
+    accel_y = (float)accel_data->y / ACCEL_SCALE_FACTOR;
+    accel_z = (float)accel_data->z / ACCEL_SCALE_FACTOR;
+
+    // Convert raw gyroscope data to degrees per second
+    gyro_x = (float)gyro_data->x / GYRO_SCALE_FACTOR + 1.3;
+    gyro_y = (float)gyro_data->y / GYRO_SCALE_FACTOR + 3.3;
+    gyro_z = (float)gyro_data->z / GYRO_SCALE_FACTOR - 0.3;
+
+    if (-0.5 <= gyro_x && gyro_x <= 0.5){
+    	gyro_x = 0;
+    }
+    if (-0.5 <= gyro_y && gyro_y <= 0.5){
+    	gyro_y = 0;
+    }
+    if (-0.5 <= gyro_z && gyro_z <= 0.5){
+    	gyro_z = 0;
+    }
+
+    // Calculate time difference
+    uint32_t current_time = HAL_GetTick();
+    float dt = (current_time - last_time) / 1000.0f; // Convert to seconds
+    last_time = current_time;
+
+    // Skip first calculation (dt would be invalid)
+    if (dt > 1.0f || dt <= 0) {
+        dt = 0.001f; // Use small default value
+    }
+
+    /*// Method 1: Accelerometer-based angles (for static/slow movement)
+    float accel_roll = atan2(accel_y, sqrt(accel_x*accel_x + accel_z*accel_z)) * RAD_TO_DEG;
+    float accel_pitch = atan2(-accel_x, sqrt(accel_y*accel_y + accel_z*accel_z)) * RAD_TO_DEG;
+
+    // Method 2: Gyroscope integration
+    float gyro_roll = orientation->roll + gyro_x * dt;
+    float gyro_pitch = orientation->pitch + gyro_y * dt;
+    float gyro_yaw = orientation->yaw + gyro_z * dt;
+
+    // Complementary filter (combines both methods)
+    float alpha = 0.98f; // Filter coefficient (0.98 = 98% gyro, 2% accel)
+
+    orientation->roll = alpha * gyro_roll + (1.0f - alpha) * accel_roll;
+    orientation->pitch = alpha * gyro_pitch + (1.0f - alpha) * accel_pitch;
+    orientation->yaw = gyro_yaw; // Only gyro for yaw (needs magnetometer for absolute)*/
+
+    float accel_magnitude = sqrt(accel_x*accel_x + accel_y*accel_y + accel_z*accel_z);
+	uint8_t is_stationary = (fabs(accel_magnitude - 1.0f) < 0.15f); // Within 0.15g of 1g
+
+	// FIX 3: Only integrate gyro when there's significant movement OR use stronger accel filter when stationary
+	if (is_stationary) {
+		// When stationary, trust accelerometer more and reduce gyro integration
+		float accel_roll = atan2(accel_y, sqrt(accel_x*accel_x + accel_z*accel_z)) * RAD_TO_DEG;
+		float accel_pitch = atan2(-accel_x, sqrt(accel_y*accel_y + accel_z*accel_z)) * RAD_TO_DEG;
+
+		// Use strong accelerometer bias when stationary
+		float alpha = 0.90f; // 90% gyro, 10% accel (less gyro influence)
+
+		float gyro_roll = orientation->roll + gyro_x * dt;
+		float gyro_pitch = orientation->pitch + gyro_y * dt;
+
+		orientation->roll = alpha * gyro_roll + (1.0f - alpha) * accel_roll;
+		orientation->pitch = alpha * gyro_pitch + (1.0f - alpha) * accel_pitch;
+
+		// FIX 4: Reduce yaw drift when stationary
+		if (fabs(gyro_z) < 0.3f) {
+			orientation->yaw += gyro_z * dt * 0.5f; // Reduce yaw integration when barely moving
+		} else {
+			orientation->yaw += gyro_z * dt;
+		}
+	} else {
+		// When moving, trust gyroscope more
+		float accel_roll = atan2(accel_y, sqrt(accel_x*accel_x + accel_z*accel_z)) * RAD_TO_DEG;
+		float accel_pitch = atan2(-accel_x, sqrt(accel_y*accel_y + accel_z*accel_z)) * RAD_TO_DEG;
+
+		float alpha = 0.98f; // 98% gyro, 2% accel
+
+		float gyro_roll = orientation->roll + gyro_x * dt;
+		float gyro_pitch = orientation->pitch + gyro_y * dt;
+
+		orientation->roll = alpha * gyro_roll + (1.0f - alpha) * accel_roll;
+		orientation->pitch = alpha * gyro_pitch + (1.0f - alpha) * accel_pitch;
+		orientation->yaw += gyro_z * dt;
+	}
+
+}
+
+/**
+ * @brief Simple accelerometer-only orientation (for static conditions)
+ * @param accel_data: Raw accelerometer data
+ * @param roll: Pointer to roll angle
+ * @param pitch: Pointer to pitch angle
+ * @retval None
+ */
+void calculate_simple_orientation(sensor_data_t *accel_data, float *roll, float *pitch)
+{
+    // Convert to g-force
+    accel_x = (float)accel_data->x / ACCEL_SCALE_FACTOR;
+    accel_y = (float)accel_data->y / ACCEL_SCALE_FACTOR;
+    accel_z = (float)accel_data->z / ACCEL_SCALE_FACTOR;
+
+    // Calculate angles
+    *roll = atan2(accel_y, sqrt(accel_x*accel_x + accel_z*accel_z)) * RAD_TO_DEG;
+    *pitch = atan2(-accel_x, sqrt(accel_y*accel_y + accel_z*accel_z)) * RAD_TO_DEG;
+}
+
+/**
+ * @brief Get current orientation angles
+ * @retval orientation_t Current orientation
+ */
+
+
+
+orientation_t get_orientation(void)
+{
+    return orientation;
+}
+
+/**
+ * @brief Check if system is level (within tolerance)
+ * @param tolerance: Tolerance in degrees
+ * @retval 1 if level, 0 if not
+ */
+uint8_t is_system_level(float tolerance)
+{
+    return (fabs(orientation.roll) < tolerance && fabs(orientation.pitch) < tolerance);
+}
+
+////////////////
 
 /**
   * @brief  This function is executed in case of error occurrence.
