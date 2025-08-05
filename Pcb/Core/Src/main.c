@@ -30,6 +30,7 @@
 #define BUFFER_SIZE             150
 #define IMU_DATA_SIZE           14
 #define MEASUREMENT_DELAY       200
+#define LORA_MAX_PAYLOAD        58
 
 #define GPS_DEBUG_RAW_NMEA      1
 
@@ -87,17 +88,57 @@ void read_bme280_data(void);
 void read_accelerometer_data(sensor_data_t *accel_data);
 void read_gyroscope_data(sensor_data_t *gyro_data);
 void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation);
-void transmit_sensor_packet(int altitude, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon);
+void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon);
 void print_gps_debug_info(void);
 void check_uart_errors(void);
 void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t len);
+
+/**
+ * @brief Send a 32-byte binary data package over UART1: altitude, pressure, accel x/y/z, orientation x/y/z (all float, 4 bytes each)
+ */
+void float_to_big_endian_bytes(float value, uint8_t *buf) {
+    uint8_t *p = (uint8_t*)&value;
+    buf[0] = p[3];
+    buf[1] = p[2];
+    buf[2] = p[1];
+    buf[3] = p[0];
+}
+
+void send_uart1_data_package(float altitude, float pressure,
+                             float acc_x, float acc_y, float acc_z,
+                             float ori_x, float ori_y, float ori_z) {
+    uint8_t packet[36];
+    int i = 0;
+
+    packet[i++] = 0xAB;
+
+    float_to_big_endian_bytes(altitude,  &packet[i]); i += 4;
+    float_to_big_endian_bytes(pressure,  &packet[i]); i += 4;
+    float_to_big_endian_bytes(acc_x,     &packet[i]); i += 4;
+    float_to_big_endian_bytes(acc_y,     &packet[i]); i += 4;
+    float_to_big_endian_bytes(acc_z,     &packet[i]); i += 4;
+    float_to_big_endian_bytes(ori_x,     &packet[i]); i += 4;
+    float_to_big_endian_bytes(ori_y,     &packet[i]); i += 4;
+    float_to_big_endian_bytes(ori_z,     &packet[i]); i += 4;
+
+    // Checksum: sum of bytes 0 to 32 (mod 256)
+    uint16_t sum = 0;
+    for (int j = 0; j < 33; ++j) {  // Düzeltme: 0-32 arası checksum
+        sum += packet[j];
+    }
+    packet[i++] = sum % 256;
+
+    packet[i++] = 0x0D;
+    packet[i++] = 0x0A;
+
+    HAL_UART_Transmit(&huart1, packet, 36, HAL_MAX_DELAY);
+}
+
 
 /* UART MSP Initialization (GPIO + NVIC) -------------------------------------*/
 
 
 /* UART IRQ Handlers ---------------------------------------------------------*/
-void USART2_IRQHandler(void) { HAL_UART_IRQHandler(&huart2); }
-void USART3_IRQHandler(void) { HAL_UART_IRQHandler(&huart3); }
 
 /* UART Rx Complete Callback for GPS (USART2) --------------------------------*/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -106,24 +147,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         /* Re-arm reception */
         HAL_UART_Receive_IT(&huart2, &rx_data, 1);
 
-        if (rx_data == '\n' || rx_data == '\r') {
-            if (rx_index > 0) {
-                rx_buffer[rx_index] = '\0';
-                lwgps_process(&gps, rx_buffer, rx_index);
-#if GPS_DEBUG_RAW_NMEA
-                HAL_UART_Transmit(&huart1, (uint8_t *)"NMEA: ", 6, 100);
-                HAL_UART_Transmit(&huart1, rx_buffer, rx_index, 100);
-                HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 100);
-#endif
-                rx_index = 0;
-            }
-        }
-        else if (rx_index < sizeof(rx_buffer) - 1) {
+        if (rx_data != '\n' && rx_index < sizeof(rx_buffer) - 1) {
             rx_buffer[rx_index++] = rx_data;
             gps_data_received_count++;
         }
         else {
-            /* Buffer overflow, reset */
+            if (rx_index > 0) {
+                rx_buffer[rx_index] = '\0';
+                lwgps_process(&gps, rx_buffer, rx_index);
+            }
             rx_index = 0;
         }
     }
@@ -139,7 +171,9 @@ void print_gps_debug_info(void)
         gps.latitude, gps.longitude,
         gps_data_received_count
     );
+#if 0
     HAL_UART_Transmit(&huart1, (uint8_t*)dbg, len, HAL_MAX_DELAY);
+#endif
 }
 
 /* Recover from UART errors on GPS ------------------------------------------*/
@@ -170,6 +204,21 @@ int main(void)
 
     initialize_sensors();
 
+    /* Configure GPS to output at 5Hz */
+    uint8_t setRate5Hz[] = {
+        0xB5, 0x62,
+        0x06, 0x08,
+        0x06, 0x00,
+        0xC8, 0x00,   // 200 ms = 5 Hz
+        0x01, 0x00,   // navRate = 1
+        0x01, 0x00,   // timeRef = GPS time
+        0xDE, 0x6A    // Checksum
+    };
+
+    HAL_Delay(1000);
+    HAL_UART_Transmit(&huart2, setRate5Hz, sizeof(setRate5Hz), HAL_MAX_DELAY);
+    HAL_Delay(1000);
+    
     lwgps_init(&gps);
     HAL_UART_Receive_IT(&huart2, &rx_data, 1);
     HAL_Delay(200);
@@ -187,6 +236,14 @@ int main(void)
         read_gyroscope_data(&gyro_data);
         calculate_orientation(&accel_data, &gyro_data, &orientation);
 
+        /* Debug GPS data before transmission */
+#if 0
+        char debug_gps[100];
+        int gps_debug_len = sprintf(debug_gps, "GPS: valid=%d fix=%d lat=%.6f lon=%.6f\r\n",
+                                   gps.is_valid, gps.fix, gps.latitude, gps.longitude);
+        HAL_UART_Transmit(&huart1, (uint8_t*)debug_gps, gps_debug_len, HAL_MAX_DELAY);
+#endif
+
         /* Transmit via LoRa */
         transmit_sensor_packet(
             (int)altitude,
@@ -200,9 +257,32 @@ int main(void)
             gps.longitude
         );
 
+        // Add this call to send the binary data package over UART1
+        send_uart1_data_package(
+            altitude,
+            Pressure / 100.0f,
+            accel_data.x / ACCEL_SCALE_FACTOR,
+            accel_data.y / ACCEL_SCALE_FACTOR,
+            accel_data.z / ACCEL_SCALE_FACTOR,
+            orientation.roll,
+            orientation.pitch,
+            orientation.yaw
+        );
+
         if (++debug_counter >= 50) {
+#if 0
             print_gps_debug_info();
+#endif
             check_uart_errors();
+            
+            /* Debug BME280 data */
+#if 0
+            char debug_bme[100];
+            int debug_len = sprintf(debug_bme, "BME280: T=%.2f P=%.2f Alt=%.2f\r\n",
+                                   Temperature, Pressure, altitude);
+            HAL_UART_Transmit(&huart1, (uint8_t*)debug_bme, debug_len, HAL_MAX_DELAY);
+#endif
+
             debug_counter = 0;
         }
         HAL_Delay(MEASUREMENT_DELAY);
@@ -282,13 +362,13 @@ void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, flo
 {
     char buf[BUFFER_SIZE];
     int len;
-    if (gps.fix == 0 || !gps.is_valid) {
-        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,0.000000,0.000000\r\n",
-                      alt, ax, ay, az, orientation.roll, orientation.pitch, orientation.yaw);
+    if (!gps.is_valid) {
+        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%d,%d,%d,0.00,0.00,%.2f\n",
+                      alt, ax, ay, az, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw, gps.altitude);
     } else {
-        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.6f,%.6f\r\n",
-                      alt, ax, ay, az, orientation.roll, orientation.pitch, orientation.yaw,
-                      lat, lon);
+        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%d,%d,%d,%.2f,%.2f,%.2f\n",
+                      alt, ax, ay, az, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw,
+                      lat, lon, gps.altitude);
     }
     uint8_t packet[PACKET_HEADER_SIZE + len];
     packet[0] = TARGET_ADDR_HIGH;
@@ -296,6 +376,13 @@ void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, flo
     packet[2] = CHANNEL;
     memcpy(&packet[3], buf, len);
     HAL_UART_Transmit(&huart3, packet, 3 + len, HAL_MAX_DELAY);
+    
+    /* Send additional line break to ensure proper separation */
+    uint8_t line_break[] = "\r\n";
+    HAL_UART_Transmit(&huart3, line_break, 2, HAL_MAX_DELAY);
+    
+    /* Add a small delay to ensure proper line separation */
+    HAL_Delay(10);
 }
 
 /* System Clock Configuration ------------------------------------------------*/
@@ -304,10 +391,13 @@ void SystemClock_Config(void)
     RCC_OscInitTypeDef       RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef       RCC_ClkInitStruct = {0};
 
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState       = RCC_HSE_ON;
+    RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
     RCC_OscInitStruct.HSIState       = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState   = RCC_PLL_NONE;
+    RCC_OscInitStruct.PLL.PLLState   = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource  = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL     = RCC_PLL_MUL9;
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
         Error_Handler();
     }
@@ -316,11 +406,11 @@ void SystemClock_Config(void)
                                        RCC_CLOCKTYPE_SYSCLK |
                                        RCC_CLOCKTYPE_PCLK1  |
                                        RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_HSI;
+    RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
     RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
         Error_Handler();
     }
 }
@@ -416,6 +506,7 @@ static void MX_GPIO_Init(void)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
 
     /* SPI_CS pin (PA4) */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
