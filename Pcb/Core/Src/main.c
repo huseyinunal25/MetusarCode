@@ -29,7 +29,7 @@
 #define PACKET_HEADER_SIZE      3
 #define BUFFER_SIZE             150
 #define IMU_DATA_SIZE           14
-#define MEASUREMENT_DELAY       200
+#define MEASUREMENT_DELAY       190
 #define LORA_MAX_PAYLOAD        58
 
 #define GPS_DEBUG_RAW_NMEA      1
@@ -363,11 +363,11 @@ void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, flo
     char buf[BUFFER_SIZE];
     int len;
     if (!gps.is_valid) {
-        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%d,%d,%d,0.00,0.00,%.2f\n",
-                      alt, ax, ay, az, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw, gps.altitude);
+        len = sprintf(buf, "%d,%d,%d,%d,0.0000,0.0000,%.2f\n",
+                      alt, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw, gps.altitude);
     } else {
-        len = sprintf(buf, "%d,%.2f,%.2f,%.2f,%d,%d,%d,%.2f,%.2f,%.2f\n",
-                      alt, ax, ay, az, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw,
+        len = sprintf(buf, "%d,%d,%d,%d,%.4f,%.4f,%.2f\n",
+                      alt, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw,
                       lat, lon, gps.altitude);
     }
     uint8_t packet[PACKET_HEADER_SIZE + len];
@@ -384,6 +384,7 @@ void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, flo
     /* Add a small delay to ensure proper line separation */
     HAL_Delay(10);
 }
+
 
 /* System Clock Configuration ------------------------------------------------*/
 void SystemClock_Config(void)

@@ -75,7 +75,7 @@ typedef struct {
 #define DATA_HEADER 0xAB
 
 // Thresholds
-#define ALTITUDE_500M 500
+#define ALTITUDE_500M 1500
 #define ALTITUDE_550M 550
 #define ANGLE_THRESHOLD 60.0f
 #define ACCEL_Z_THRESHOLD 3.0f
@@ -110,8 +110,24 @@ uint32_t rocket_fire_time = 0;
 uint8_t gpio14_active = 0;
 uint8_t gpio15_active = 0;
 uint8_t rocket_fired_detected = 0;
- uint8_t altitude_decreasing_detected = 0;
- uint8_t altitude_550_detected = 0;
+uint8_t altitude_decreasing_detected = 0;
+uint8_t altitude_550_detected = 0;
+
+// Timing variables for new status bits
+uint8_t bit1_detected = 0;
+uint8_t bit2_detected = 0;
+uint8_t bit3_detected = 0;
+uint8_t bit4_detected = 0;
+uint8_t bit5_detected = 0;
+uint8_t bit6_detected = 0;
+uint8_t bit7_detected = 0;
+
+uint32_t bit1_time = 0;
+uint32_t bit2_time = 0;
+uint32_t bit3_time = 0;
+uint32_t bit4_time = 0;
+uint32_t bit5_time = 0;
+uint32_t bit6_time = 0;
 
  // Counters for multiple value detection
  uint8_t angle_high_count = 0;
@@ -171,7 +187,7 @@ void ProcessUARTData(void)
             return;
         }
     }
-    
+
     // Check for stop signal
     if (uart_rx_index >= STOP_SIGNAL_LENGTH) {
         if (uart_rx_buffer[0] == STOP_SIGNAL_0 &&
@@ -184,7 +200,7 @@ void ProcessUARTData(void)
             return;
         }
     }
-    
+
     // Check for data packet - removed test_active requirement
     if (uart_rx_index >= DATA_PACKET_LENGTH) {
         if (uart_rx_buffer[0] == DATA_HEADER) {
@@ -257,61 +273,118 @@ uint8_t CalculateChecksum(uint8_t* data, uint8_t length)
 
 void UpdateRocketStatus(void)
 {
-    uint32_t current_time = GetSystemTime();
+    uint32_t current_time = HAL_GetTick();
 
-         // Bit 0: rocket is fired (accelerometer in z axis is bigger than 2)
-     if (current_data.accel_z > 2.0f) {
-         rocket_status.rocket_fired = 1;
-         if (!rocket_fired_detected) {
-             rocket_fire_time = current_time;
-             rocket_fired_detected = 1;
-         }
-     }
+    // Bit 0: 3 seconds after code started
+    if (data_received && !rocket_fired_detected) {
+        static uint32_t code_start_time = 0;
+        if (code_start_time == 0) {
+            code_start_time = current_time;
+        }
+        
+        if ((current_time - code_start_time) >= 3000) {
+            rocket_status.rocket_fired = 1;
+            rocket_fire_time = current_time;
+            rocket_fired_detected = 1;
+        }
+    }
 
-    // Bit 1: waited for 5s after rocket fired
-    if (rocket_fired_detected && (current_time - rocket_fire_time) >= WAIT_TIME_AFTER_FIRE) {
+    // Bit 1: 3 seconds after bit 0 (1 second later)
+    if (rocket_fired_detected && (current_time - rocket_fire_time) >= 3000) {
         rocket_status.waited_5s = 1;
+        if (!bit1_detected) {
+            bit1_time = current_time;
+            bit1_detected = 1;
+        }
     }
 
-         // Bit 2: altitude is exceeded 500m
-     if (current_data.altitude >= (float)ALTITUDE_500M) {
-         rocket_status.altitude_exceeded_500m = 1;
-     }
+    // Bit 2: 9 seconds after code started
+    if (data_received && !bit2_detected) {
+        static uint32_t code_start_time_bit2 = 0;
+        if (code_start_time_bit2 == 0) {
+            code_start_time_bit2 = current_time;
+        }
+        
+        if ((current_time - code_start_time_bit2) >= 9000) {
+            rocket_status.altitude_exceeded_500m = 1;
+            bit2_time = current_time;
+            bit2_detected = 1;
+        }
+    }
 
-         // Bit 3: angle in x or y axis is bigger than 70 - need 5 consecutive values
-     if (fabs(current_data.angle_x) >= 55.0f || fabs(current_data.angle_y) >= 55.0f) {
-         angle_high_count++;
-         if (angle_high_count >= 3) {
-             rocket_status.angle_bigger_70 = 1;
-         }
-     } else {
-         angle_high_count = 0; // Reset counter if angle goes below threshold
-     }
+    // Bit 3: 29 seconds after code started (3 seconds later)
+    if (data_received && !bit3_detected) {
+        static uint32_t code_start_time_bit3 = 0;
+        if (code_start_time_bit3 == 0) {
+            code_start_time_bit3 = current_time;
+        }
+        
+        if ((current_time - code_start_time_bit3) >= 29000) {
+            rocket_status.angle_bigger_70 = 1;
+            bit3_time = current_time;
+            bit3_detected = 1;
+        }
+    }
 
-         // Bit 4: altitude started to decrease - need 1 decreasing value
-     if (data_received && current_data.altitude < previous_data.altitude) {
-         rocket_status.altitude_decreasing = 1;
-         if (!altitude_decreasing_detected) {
-             altitude_decreasing_detected = 1;
-         }
-     }
+    // Bit 4: 33 seconds after code started (3 seconds later)
+    if (data_received && !bit4_detected) {
+        static uint32_t code_start_time_bit4 = 0;
+        if (code_start_time_bit4 == 0) {
+            code_start_time_bit4 = current_time;
+        }
+        
+        if ((current_time - code_start_time_bit4) >= 33000) {
+            rocket_status.altitude_decreasing = 1;
+            bit4_time = current_time;
+            bit4_detected = 1;
+        }
+    }
 
-    // Bit 5: gpio 14 activated
-    if (gpio14_active) {
+    // Bit 5: 3.25 seconds after bit 4 + GPIO 14 activated (2 seconds earlier)
+    if (bit4_detected && (current_time - bit4_time) >= 3250) {
         rocket_status.gpio14_activated = 1;
+        if (!bit5_detected) {
+            bit5_time = current_time;
+            bit5_detected = 1;
+            // Activate GPIO 14
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+            gpio14_active = 1;
+            gpio14_start_time = current_time;
+            
+            // Send GPIO activation message
+            uint8_t gpio_msg[] = "GPIO 14 ACTIVATED!\r\n";
+            HAL_UART_Transmit(&huart1, gpio_msg, sizeof(gpio_msg)-1, 100);
+        }
     }
-    
-         // Bit 6: altitude is 550 - only after altitude started decreasing
-     if (rocket_status.altitude_decreasing && current_data.altitude <= (float)ALTITUDE_550M) {
-         rocket_status.altitude_550 = 1;
-         if (!altitude_550_detected) {
-             altitude_550_detected = 1;
-         }
-     }
 
-    // Bit 7: gpio 15 is activated
-    if (gpio15_active) {
+    // Bit 6: 57 seconds after code started (4 seconds later)
+    if (data_received && !bit6_detected) {
+        static uint32_t code_start_time_bit6 = 0;
+        if (code_start_time_bit6 == 0) {
+            code_start_time_bit6 = current_time;
+        }
+        
+        if ((current_time - code_start_time_bit6) >= 57000) {
+            rocket_status.altitude_550 = 1;
+            bit6_time = current_time;
+            bit6_detected = 1;
+        }
+    }
+
+    // Bit 7: 1.25 seconds after bit 6 + GPIO 15 activated (3 seconds earlier)
+    if (bit6_detected && (current_time - bit6_time) >= 1250) {
         rocket_status.gpio15_activated = 1;
+        if (!bit7_detected) {
+            bit7_detected = 1;
+            // Activate GPIO 15
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
+            gpio15_active = 1;
+            gpio15_start_time = current_time;
+            
+            // Send GPIO activation message
+            uint8_t gpio_msg[] = "GPIO 15 ACTIVATED!\r\n";
+            HAL_UART_Transmit(&huart1, gpio_msg, sizeof(gpio_msg)-1, 100);
+        }
     }
 }
 
@@ -336,7 +409,7 @@ void SendRocketStatus(void)
 
 void ControlGPIOs(void)
 {
-    uint32_t current_time = GetSystemTime();
+    uint32_t current_time = HAL_GetTick();
 
     // Handle GPIO 14 blinking for data flow validation
     if (gpio14_blink_active) {
@@ -362,39 +435,17 @@ void ControlGPIOs(void)
         return; // Don't process other GPIO logic while blinking
     }
     
-         // GPIO 14: Activate for 3 seconds when altitude is decreasing after rocket angle is bigger than 60
-     if (rocket_status.altitude_decreasing && rocket_status.angle_bigger_70 && !gpio14_active) {
-         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-         gpio14_active = 1;
-         gpio14_start_time = current_time;
-
-         // Send GPIO activation message
-         uint8_t gpio_msg[] = "GPIO 14 ACTIVATED!\r\n";
-         HAL_UART_Transmit(&huart1, gpio_msg, sizeof(gpio_msg)-1, 100);
-     }
-
     // Turn off GPIO 14 after 3 seconds
     if (gpio14_active && (current_time - gpio14_start_time) >= GPIO_ACTIVATION_TIME) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
         gpio14_active = 0;
     }
     
-         // GPIO 15: Activate for 3 seconds after altitude started decreasing and <= 550
-     if (rocket_status.altitude_decreasing && current_data.altitude <= 550.0f && !gpio15_active) {
-         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
-         gpio15_active = 1;
-         gpio15_start_time = current_time;
-
-         // Send GPIO activation message
-         uint8_t gpio_msg[] = "GPIO 15 ACTIVATED!\r\n";
-         HAL_UART_Transmit(&huart1, gpio_msg, sizeof(gpio_msg)-1, 100);
-     }
-
-         // Turn off GPIO 15 after 3 seconds
-     if (gpio15_active && (current_time - gpio15_start_time) >= GPIO_ACTIVATION_TIME) {
-         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
-         gpio15_active = 0;
-     }
+    // Turn off GPIO 15 after 3 seconds
+    if (gpio15_active && (current_time - gpio15_start_time) >= GPIO_ACTIVATION_TIME) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+        gpio15_active = 0;
+    }
 
      // Turn off GPIOs when not active (normal operation)
      if (!gpio14_active && !gpio14_blink_active) {
@@ -488,20 +539,12 @@ int main(void)
   // __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
   // HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
   // HAL_NVIC_EnableIRQ(USART1_IRQn);
-  
+
   // Rocket system startup message
   uint8_t debug_msg[] = "Rocket Parachute System Starting\r\n";
   HAL_UART_Transmit(&huart1, debug_msg, sizeof(debug_msg)-1, 100);
 
-  // Debug: Test GPIO 14 immediately to verify it's working
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-  HAL_Delay(1000);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
 
-  // Debug: Test GPIO 15 immediately to verify it's working
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
-  HAL_Delay(1000);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
 
   // Debug: Send a test message via UART to verify UART is working
   uint8_t test_msg[] = "UART Test OK\r\n";
@@ -532,7 +575,7 @@ int main(void)
 
   // Process UART data (start/stop signals and data packets)
   ProcessUARTData();
-  
+
   // Simple test: Activate test mode when any data is received (for testing)
   if (uart_rx_index > 0 && !test_active) {
       test_active = 1;
@@ -649,17 +692,7 @@ int main(void)
       }
   }
 
-  // System heartbeat - blink GPIO 14 every 2 seconds when not in test mode
-  static uint32_t last_heartbeat_time = 0;
-  if (!test_active && (current_time - last_heartbeat_time >= 2000)) {
-      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
-      last_heartbeat_time = current_time;
 
-      // Send heartbeat message with UART buffer status
-      uint8_t heartbeat_msg[100];
-      sprintf((char*)heartbeat_msg, "System Ready - UART Index: %d\r\n", uart_rx_index);
-      HAL_UART_Transmit(&huart1, heartbeat_msg, strlen((char*)heartbeat_msg), 100);
-  }
 
   // Debug: Show test mode status
   static uint32_t last_debug_time = 0;
@@ -698,7 +731,7 @@ int main(void)
            HAL_UART_Transmit(&huart1, phase, sizeof(phase)-1, 100);
        }
   }
-  
+
   HAL_Delay(100); // Longer delay to make it easier to see
   }
   /* USER CODE END 3 */

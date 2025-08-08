@@ -43,6 +43,7 @@ extern int32_t tRaw, pRaw, hRaw;
 I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 
@@ -53,6 +54,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -94,6 +96,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART1_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
   BME280_Config(OSRS_2, OSRS_2, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
@@ -107,8 +110,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  altitude = 44330 * (1- pow((Pressure/101325), (1/5.225)));
 	  BME280_Measure();
+	  altitude = 44330 * (1- pow((Pressure/101325), (1/5.225)));
 	  HAL_Delay (500);
 
 	  static float previous_altitude = 0;  // İlk başta 0, bir kez ayarlanacak
@@ -123,9 +126,21 @@ int main(void)
 
 
 	  char buffer[100];
+		uint16_t len;
 
-	  snprintf(buffer, sizeof(buffer), "Sicaklik: %.2f C,Basinc: %.2f, Altitude: %.2f m %%\r\n", Temperature, Pressure , altitude);
-	  HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), 1000);
+		uint8_t hedef_adres_h = 0x00;
+		uint8_t hedef_adres_l = 0x02;
+		uint8_t kanal = 0x17;
+
+	        len = sprintf(buffer, "T: %.2f C, P: %.2f, A: %.2f m %%\r\n", Temperature, Pressure , altitude);
+
+	        uint8_t paket[3 + len];
+	        paket[0] = hedef_adres_h;
+	        paket[1] = hedef_adres_l;
+	        paket[2] = kanal;
+	        memcpy(&paket[3], buffer, len);
+
+	        HAL_UART_Transmit(&huart3, paket, 3 + len , HAL_MAX_DELAY);
   }
   /* USER CODE END 3 */
 }
@@ -232,6 +247,34 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
+}
+
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
 
 }
 

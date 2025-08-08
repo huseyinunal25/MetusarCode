@@ -49,6 +49,8 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 
@@ -60,6 +62,8 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 void mpu9250_veri(uint8_t reg, uint8_t *data, uint8_t data_length);
 /* USER CODE END PFP */
@@ -101,6 +105,8 @@ int main(void)
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   BME280_Config(OSRS_2, OSRS_2, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
 
@@ -136,35 +142,33 @@ int main(void)
 		gyro_data_z = ((int16_t)imu_data_2[4]<<8) + imu_data_2[5]; // z axis
 
 
-
-			if (((accel_data_x > 11500 || accel_data_x < -11500) ||
-				 (accel_data_y > 11500 || accel_data_y < -11500)) &&
-				((previous_altitude - altitude) > 3.0f)) {
-
-				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET); // Aktif et
-
-			} else {
-
-				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET); // Pasif et
-
-			}
+			char buffer[100];
+			uint16_t len;
 
 
+			uint8_t hedef_adres_h = 0x00;
+			uint8_t hedef_adres_l = 0x02;
+			uint8_t kanal = 0x17;
+
+			len = sprintf(buffer, "x: %d, y: %d, z: %d\r\n", accel_data_x, accel_data_y , accel_data_z);
 
 
-		previous_altitude = altitude;  // Her döngü sonunda güncelle
+		        uint8_t paket[3 + len];
+		        paket[0] = hedef_adres_h;
+		        paket[1] = hedef_adres_l;
+		        paket[2] = kanal;
+		        memcpy(&paket[3], buffer, len);
+
+		        HAL_UART_Transmit(&huart3, paket, 3 + len , HAL_MAX_DELAY);
 
 
-		char buffer[100];
-		snprintf(buffer, sizeof(buffer), "Sicaklik: %.2f C,Basinc: %.2f, Altitude: %.2f m %%\r\n", Temperature, Pressure , altitude);
-		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), 1000);
+		}
   }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-}
-  /* USER CODE END 3 */
 
+  /* USER CODE END 3 */
 
 
 /**
@@ -309,6 +313,72 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 9600;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -325,10 +395,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2|GPIO_PIN_4, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PA2 PA4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_4;
+  /*Configure GPIO pin : PA4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
