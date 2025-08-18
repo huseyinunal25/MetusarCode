@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "lwgps/lwgps.h"
+#include <stdbool.h>
 
 /* Private defines -----------------------------------------------------------*/
 #define PACKET_HEADER_SIZE      3
@@ -54,6 +55,15 @@ typedef struct {
     float roll, pitch, yaw;
 } orientation_t;
 
+/* Kalman Filter structure for each angle */
+typedef struct {
+    float Q;  // Process noise covariance
+    float R;  // Measurement noise covariance
+    float P;  // Estimate error covariance
+    float K;  // Kalman gain
+    float X;  // State estimate
+} kalman_filter_t;
+
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef    hi2c1;
 SPI_HandleTypeDef    hspi1;
@@ -63,6 +73,11 @@ UART_HandleTypeDef   huart3;    /* LoRa */
 
 static orientation_t orientation = {0};
 static uint32_t      last_time = 0;
+
+// Kalman filters for each angle
+static kalman_filter_t kalman_roll = {0};
+static kalman_filter_t kalman_pitch = {0};
+static kalman_filter_t kalman_yaw = {0};
 
 lwgps_t              gps;
 uint8_t              rx_buffer[128];
@@ -92,6 +107,15 @@ void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, flo
 void print_gps_debug_info(void);
 void check_uart_errors(void);
 void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t len);
+
+// Kalman filter functions
+void kalman_filter_init(kalman_filter_t *kf, float Q, float R);
+float kalman_filter_update(kalman_filter_t *kf, float measurement, float dt);
+void initialize_kalman_filters(void);
+void print_kalman_debug_info(void);
+void adjust_kalman_parameters(void);
+bool is_device_stationary(void);
+void set_kalman_responsiveness(bool high_responsiveness);
 
 /**
  * @brief Send a 32-byte binary data package over UART1: altitude, pressure, accel x/y/z, orientation x/y/z (all float, 4 bytes each)
@@ -189,6 +213,139 @@ void check_uart_errors(void)
         __HAL_UART_CLEAR_NEFLAG(&huart2);
 }
 
+/* Kalman Filter Implementation ----------------------------------------------*/
+void kalman_filter_init(kalman_filter_t *kf, float Q, float R)
+{
+    kf->Q = Q;  // Process noise covariance
+    kf->R = R;  // Measurement noise covariance
+    kf->P = 1.0f;  // Initial estimate error covariance
+    kf->K = 0.0f;  // Initial Kalman gain
+    kf->X = 0.0f;  // Initial state estimate
+}
+
+float kalman_filter_update(kalman_filter_t *kf, float measurement, float dt)
+{
+    // Prediction step
+    float X_pred = kf->X;  // State prediction (assuming constant velocity model)
+    float P_pred = kf->P + kf->Q * dt;  // Error covariance prediction
+    
+    // Update step
+    kf->K = P_pred / (P_pred + kf->R);  // Kalman gain
+    kf->X = X_pred + kf->K * (measurement - X_pred);  // State update
+    kf->P = (1.0f - kf->K) * P_pred;  // Error covariance update
+    
+    return kf->X;
+}
+
+void initialize_kalman_filters(void)
+{
+    // Initialize Kalman filters with appropriate noise parameters
+    // Q: Process noise (gyroscope drift), R: Measurement noise (accelerometer noise)
+    // Lower Q = more trust in model, Higher R = more trust in measurements
+    
+    // MORE RESPONSIVE SETTINGS (faster angle changes):
+    // Roll and Pitch: Good accelerometer reference available
+    kalman_filter_init(&kalman_roll, 0.01f, 0.05f);   // Roll filter - Higher Q, Lower R = more responsive
+    kalman_filter_init(&kalman_pitch, 0.01f, 0.05f);  // Pitch filter - Higher Q, Lower R = more responsive
+    
+    // Yaw: No absolute reference, rely more on gyroscope
+    kalman_filter_init(&kalman_yaw, 0.01f, 0.2f);    // Yaw filter - Higher Q = more responsive
+    
+    // ALTERNATIVE: STABLE SETTINGS (slower but smoother):
+    // kalman_filter_init(&kalman_roll, 0.001f, 0.1f);   // Roll filter - Lower Q, Higher R = more stable
+    // kalman_filter_init(&kalman_pitch, 0.001f, 0.1f);  // Pitch filter - Lower Q, Higher R = more stable
+    // kalman_filter_init(&kalman_yaw, 0.001f, 0.5f);    // Yaw filter - Lower Q = more stable
+    
+    // Initialize orientation to zero
+    orientation.roll = 0.0f;
+    orientation.pitch = 0.0f;
+    orientation.yaw = 0.0f;
+    
+    // Initialize time reference
+    last_time = HAL_GetTick();
+}
+
+void print_kalman_debug_info(void)
+{
+    char dbg[256];
+    int len = sprintf(dbg,
+        "Kalman Debug: Roll(K=%.3f,P=%.3f,Q=%.4f) Pitch(K=%.3f,P=%.3f,Q=%.4f) Yaw(K=%.3f,P=%.3f,Q=%.4f) Motion:%s\r\n",
+        kalman_roll.K, kalman_roll.P, kalman_roll.Q,
+        kalman_pitch.K, kalman_pitch.P, kalman_pitch.Q,
+        kalman_yaw.K, kalman_yaw.P, kalman_yaw.Q,
+        is_device_stationary() ? "Stationary" : "Moving"
+    );
+#if 0  // Set to 1 to enable Kalman debug output
+    HAL_UART_Transmit(&huart1, (uint8_t*)dbg, len, HAL_MAX_DELAY);
+#endif
+}
+
+// Function to manually set responsiveness mode
+void set_kalman_responsiveness(bool high_responsiveness)
+{
+    if (high_responsiveness) {
+        // High responsiveness mode - angles change faster
+        kalman_filter_init(&kalman_roll, 0.05f, 0.02f);   // Very high Q, very low R
+        kalman_filter_init(&kalman_pitch, 0.05f, 0.02f);  // Very high Q, very low R
+        kalman_filter_init(&kalman_yaw, 0.05f, 0.1f);     // Very high Q
+    } else {
+        // Stable mode - angles change slower but smoother
+        kalman_filter_init(&kalman_roll, 0.001f, 0.1f);   // Low Q, high R
+        kalman_filter_init(&kalman_pitch, 0.001f, 0.1f);  // Low Q, high R
+        kalman_filter_init(&kalman_yaw, 0.001f, 0.5f);    // Low Q
+    }
+}
+
+bool is_device_stationary(void)
+{
+    // Calculate the magnitude of acceleration and gyroscope
+    float accel_magnitude = sqrtf(accel_x*accel_x + accel_y*accel_y + accel_z*accel_z);
+    float gyro_magnitude = sqrtf(gyro_x*gyro_x + gyro_y*gyro_y + gyro_z*gyro_z);
+    
+    // Device is considered stationary if:
+    // - Acceleration is close to 1g (9.81 m/s²) with some tolerance
+    // - Gyroscope readings are very low
+    float accel_tolerance = 0.5f;  // 0.5 m/s² tolerance
+    float gyro_threshold = 0.5f;   // 0.5 °/s threshold
+    
+    return (fabsf(accel_magnitude - 9.81f) < accel_tolerance) && (gyro_magnitude < gyro_threshold);
+}
+
+void adjust_kalman_parameters(void)
+{
+    static uint32_t last_adjustment = 0;
+    uint32_t now = HAL_GetTick();
+    
+    // Adjust parameters every 2 seconds (more frequent for better responsiveness)
+    if (now - last_adjustment > 2000) {
+        float motion_intensity = sqrtf(gyro_x*gyro_x + gyro_y*gyro_y + gyro_z*gyro_z);
+        
+        if (is_device_stationary()) {
+            // When stationary, use stable settings
+            kalman_roll.Q = 0.001f;
+            kalman_pitch.Q = 0.001f;
+            kalman_yaw.Q = 0.001f;
+        } else if (motion_intensity > 10.0f) {
+            // High motion - very responsive
+            kalman_roll.Q = 0.05f;
+            kalman_pitch.Q = 0.05f;
+            kalman_yaw.Q = 0.05f;
+        } else if (motion_intensity > 5.0f) {
+            // Medium motion - responsive
+            kalman_roll.Q = 0.02f;
+            kalman_pitch.Q = 0.02f;
+            kalman_yaw.Q = 0.02f;
+        } else {
+            // Low motion - moderately responsive
+            kalman_roll.Q = 0.01f;
+            kalman_pitch.Q = 0.01f;
+            kalman_yaw.Q = 0.01f;
+        }
+        
+        last_adjustment = now;
+    }
+}
+
 /* Main -----------------------------------------------------------------------*/
 int main(void)
 {
@@ -203,6 +360,9 @@ int main(void)
     MX_USART3_UART_Init();
 
     initialize_sensors();
+
+    /* Initialize Kalman filters for angle estimation */
+    initialize_kalman_filters();
 
     /* Configure GPS to output at 5Hz */
     uint8_t setRate5Hz[] = {
@@ -235,6 +395,9 @@ int main(void)
         read_accelerometer_data(&accel_data);
         read_gyroscope_data(&gyro_data);
         calculate_orientation(&accel_data, &gyro_data, &orientation);
+
+        /* Adjust Kalman filter parameters based on motion state */
+        adjust_kalman_parameters();
 
         /* Debug GPS data before transmission */
 #if 0
@@ -282,6 +445,10 @@ int main(void)
                                    Temperature, Pressure, altitude);
             HAL_UART_Transmit(&huart1, (uint8_t*)debug_bme, debug_len, HAL_MAX_DELAY);
 #endif
+
+            /* Debug Kalman filter performance */
+            print_kalman_debug_info();
+            // adjust_kalman_parameters(); // Adjust parameters after each debug cycle - Moved to IMU calculation
 
             debug_counter = 0;
         }
@@ -332,7 +499,7 @@ void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t len)
     HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_SET);
 }
 
-/* Calculate orientation (complementary filter) ------------------------------*/
+/* Calculate orientation using Kalman filtering ------------------------------*/
 void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *o)
 {
     /* Convert to units */
@@ -348,13 +515,47 @@ void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, 
     last_time = now;
     if (dt <= 0 || dt > 1.0f) dt = 0.01f;
 
+    // Apply simple gyroscope bias compensation (temperature drift)
+    static float gyro_bias_x = 0.0f, gyro_bias_y = 0.0f, gyro_bias_z = 0.0f;
+    static uint32_t bias_update_counter = 0;
+    
+    if (is_device_stationary()) {
+        // Update bias when stationary
+        gyro_bias_x = 0.95f * gyro_bias_x + 0.05f * gyro_x;
+        gyro_bias_y = 0.95f * gyro_bias_y + 0.05f * gyro_y;
+        gyro_bias_z = 0.95f * gyro_bias_z + 0.05f * gyro_z;
+        bias_update_counter++;
+    }
+    
+    // Apply bias compensation
+    float gyro_x_comp = gyro_x - gyro_bias_x;
+    float gyro_y_comp = gyro_y - gyro_bias_y;
+    float gyro_z_comp = gyro_z - gyro_bias_z;
+
+    // Calculate accelerometer-based angles
     float accel_roll  = atan2f(accel_y, sqrtf(accel_x*accel_x + accel_z*accel_z)) * RAD_TO_DEG;
     float accel_pitch = atan2f(-accel_x, sqrtf(accel_y*accel_y + accel_z*accel_z)) * RAD_TO_DEG;
-
-    float alpha = 0.98f;
-    o->roll  = alpha * (o->roll  + gyro_x * dt) + (1.0f - alpha) * accel_roll;
-    o->pitch = alpha * (o->pitch + gyro_y * dt) + (1.0f - alpha) * accel_pitch;
-    o->yaw  += gyro_z * dt;
+    
+    // Apply Kalman filtering to roll and pitch
+    o->roll = kalman_filter_update(&kalman_roll, accel_roll, dt);
+    o->pitch = kalman_filter_update(&kalman_pitch, accel_pitch, dt);
+    
+    // For yaw, we only have gyroscope data, so we use a simple integration with Kalman filtering
+    // to reduce drift
+    float gyro_yaw_rate = gyro_z_comp;
+    float predicted_yaw = o->yaw + gyro_yaw_rate * dt;
+    
+    // Use a higher measurement noise for yaw since we don't have absolute reference
+    // This makes the filter rely more on the gyroscope prediction
+    o->yaw = kalman_filter_update(&kalman_yaw, predicted_yaw, dt);
+    
+    // Normalize yaw to -180 to +180 degrees
+    while (o->yaw > 180.0f) o->yaw -= 360.0f;
+    while (o->yaw < -180.0f) o->yaw += 360.0f;
+    
+    // Apply angle limits to prevent unrealistic values
+    o->roll = fmaxf(-90.0f, fminf(90.0f, o->roll));
+    o->pitch = fmaxf(-90.0f, fminf(90.0f, o->pitch));
 }
 
 /* Transmit packet over LoRa (USART3) ----------------------------------------*/
