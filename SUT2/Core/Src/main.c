@@ -91,6 +91,8 @@ typedef enum {
 #define DROGUE_PARACHUTE_PORT GPIOB
 #define MAIN_PARACHUTE_PORT GPIOB
 
+uint8_t tmp[4];
+
 // Buffer sizes
 #define TELEMETRY_BUFFER_SIZE 36
 #define COMMAND_BUFFER_SIZE 5
@@ -156,6 +158,9 @@ uint8_t CalculateChecksum(uint8_t* data, uint8_t length);
 void ResetSystem(void);
 float ApplyMovingAverageFilter(float* filter, float new_value);
 void InitializeGPIO(void);
+
+char debug_msg[100];
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -224,6 +229,10 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+	snprintf(debug_msg, sizeof(debug_msg), "Altitude: %.2f m\r\n", current_telemetry.altitude);
+	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+	HAL_Delay(10);
+
 
     /* USER CODE BEGIN 3 */
     // Get current time once for this loop iteration
@@ -252,7 +261,7 @@ int main(void)
     
     // Check if we have received telemetry data via UART1
     // This would typically be done in an interrupt, but for now we'll check here
-    if (system_state != STATE_IDLE) {
+    /*if (system_state != STATE_IDLE) {
       // Process any received telemetry data
       // The ProcessTelemetryPacket function should be called from UART interrupt
       // when telemetry data is received
@@ -274,34 +283,7 @@ int main(void)
         // Update flight status with simulated data
         UpdateFlightStatus();
       }
-    }
-
-    // Debug: Print current system state every 5 seconds
-    static uint32_t last_debug_print = 0;
-    if (current_time - last_debug_print >= 5000) {
-        last_debug_print = current_time;
-        // Send a test status packet to verify UART transmission is working
-        TransmitStatus();
-
-        // Also send a simple debug message with current status
-        char debug_msg[100];
-        snprintf(debug_msg, sizeof(debug_msg),
-                "DEBUG: Alt=%.1fm, AccZ=%.1fm/s2, Status=0x%04X\r\n",
-                current_telemetry.altitude,
-                current_telemetry.accel_z,
-                (uint16_t)(flight_status.launch_detected |
-                          (flight_status.motor_burnout_delay_completed << 1) |
-                          (flight_status.min_altitude_reached << 2) |
-                          (flight_status.excessive_tilt_detected << 3) |
-                          (flight_status.descent_detected << 4) |
-                          (flight_status.drogue_deployment_issued << 5) |
-                          (flight_status.altitude_below_main_threshold << 6) |
-                          (flight_status.main_parachute_deployment_issued << 7)));
-        HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-    }
-    
-    // Small delay to prevent busy waiting
-    HAL_Delay(10);
+    }*/
   }
   /* USER CODE END 3 */
 }
@@ -617,6 +599,12 @@ void ProcessTelemetryPacket(uint8_t* packet)
         return; // Checksum mismatch
     }
     
+    /*char debug_msg[100];
+	for (int i = 0; i < 36; i++) {   // paket uzunluğu 36 byte ise
+		int len = sprintf(debug_msg, "%02X ", packet[i]);
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, len, 100);
+	}*/
+	HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 100);
     // Extract telemetry data (little-endian IEEE 754 float)
     memcpy(&current_telemetry.altitude, &packet[1], 4);
     memcpy(&current_telemetry.pressure, &packet[5], 4);
@@ -626,6 +614,7 @@ void ProcessTelemetryPacket(uint8_t* packet)
     memcpy(&current_telemetry.angle_x, &packet[21], 4);
     memcpy(&current_telemetry.angle_y, &packet[25], 4);
     memcpy(&current_telemetry.angle_z, &packet[29], 4);
+
     
     // Apply moving average filter to reduce noise
     current_telemetry.altitude = ApplyMovingAverageFilter(altitude_filter, current_telemetry.altitude);
@@ -686,18 +675,27 @@ void UpdateFlightStatus(void)
         fabsf(current_telemetry.accel_z) > LAUNCH_ACCELERATION_THRESHOLD) {
         flight_status.launch_detected = 1;
         launch_timestamp = current_time;
-    }
+        strcpy(debug_msg, "launch_detected");
+        HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+        HAL_Delay(10);
+   }
     
     // Motor burnout delay (5 seconds after launch)
     if (flight_status.launch_detected && !flight_status.motor_burnout_delay_completed &&
         (current_time - launch_timestamp) >= MOTOR_BURNOUT_DELAY_MS) {
         flight_status.motor_burnout_delay_completed = 1;
+        strcpy(debug_msg, "burn out");
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+		HAL_Delay(10);
     }
     
     // Minimum altitude threshold
     if (!flight_status.min_altitude_reached && 
         current_telemetry.altitude > MIN_ALTITUDE_THRESHOLD) {
         flight_status.min_altitude_reached = 1;
+        strcpy(debug_msg, "min_altitude");
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+		HAL_Delay(10);
     }
     
     // Excessive tilt detection
@@ -705,6 +703,9 @@ void UpdateFlightStatus(void)
         (fabsf(current_telemetry.angle_x) > EXCESSIVE_TILT_THRESHOLD ||
          fabsf(current_telemetry.angle_y) > EXCESSIVE_TILT_THRESHOLD)) {
         flight_status.excessive_tilt_detected = 1;
+        strcpy(debug_msg, "angle detected");
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+		HAL_Delay(10);
     }
     
     // Track peak altitude for apogee detection
@@ -717,6 +718,9 @@ void UpdateFlightStatus(void)
         flight_status.min_altitude_reached &&
         current_telemetry.altitude < (peak_altitude - 10.0f)) { // 10m tolerance
         flight_status.descent_detected = 1;
+        strcpy(debug_msg, "descent detected");
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+		HAL_Delay(10);
     }
     
     // Drogue parachute deployment
@@ -733,11 +737,14 @@ void UpdateFlightStatus(void)
     if (!flight_status.altitude_below_main_threshold &&
         current_telemetry.altitude < MAIN_PARACHUTE_ALTITUDE) {
         flight_status.altitude_below_main_threshold = 1;
+        strcpy(debug_msg, "altitude550 detected");
+		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+		HAL_Delay(10);
     }
     
     // Main parachute deployment
     if (!flight_status.main_parachute_deployment_issued &&
-        flight_status.altitude_below_main_threshold) {
+        flight_status.altitude_below_main_threshold && flight_status.descent_detected) {
         DeployMainParachute();
     }
 }
@@ -753,6 +760,11 @@ void DeployDrogueParachute(void)
     // Keep pin high for 100ms to ensure deployment
     HAL_Delay(100);
     HAL_GPIO_WritePin(DROGUE_PARACHUTE_PORT, DROGUE_PARACHUTE_PIN, GPIO_PIN_RESET);
+    HAL_Delay(10);
+    strcpy(debug_msg, "dragparachute deployed");
+	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+	HAL_Delay(10);
+
 }
 
 /**
@@ -766,6 +778,10 @@ void DeployMainParachute(void)
     // Keep pin high for 100ms to ensure deployment
     HAL_Delay(100);
     HAL_GPIO_WritePin(MAIN_PARACHUTE_PORT, MAIN_PARACHUTE_PIN, GPIO_PIN_RESET);
+    HAL_Delay(10);
+    strcpy(debug_msg, "parachute deployed");
+	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+	HAL_Delay(10);
 }
 
 /**
@@ -846,7 +862,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             // For now, just acknowledge we received telemetry header
             // In a real implementation, you'd receive the full 36-byte packet
             // Re-enable receive interrupt for next packet
-            HAL_UART_Receive_IT(&huart1, command_buffer, COMMAND_BUFFER_SIZE);
+            HAL_UART_Receive_IT(&huart1, command_buffer, TELEMETRY_BUFFER_SIZE);
         } else {
             // Unknown packet type, re-enable receive interrupt
             HAL_UART_Receive_IT(&huart1, command_buffer, COMMAND_BUFFER_SIZE);
