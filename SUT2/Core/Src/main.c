@@ -181,6 +181,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   MX_TIM1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   // Enable global interrupts
   __enable_irq();
@@ -720,7 +721,7 @@ void UpdateStatusFromTelemetry(void)
 
     // Check rocket fired (accel z > 30) - FIRST BIT (Bit 0)
     // Once activated, this bit stays on permanently
-    if (filtered_accel_z > 30.0f) {
+    if (filtered_accel_z > 25.0f) {
         new_status |= STATUS_ROCKET_FIRED_BIT;
         if (!(current_status_byte & STATUS_ROCKET_FIRED_BIT)) {
             // Rocket just fired, record timestamp
@@ -745,7 +746,7 @@ void UpdateStatusFromTelemetry(void)
     // Check angle exceeded (x or y > 60) - FOURTH BIT (Bit 3)
     // Only if minimum altitude bit is active, and once activated stays on
     if ((new_status & STATUS_MIN_ALTITUDE_BIT) &&
-        (filtered_angle_x > 60.0f || filtered_angle_y > 60.0f)) {
+        (filtered_angle_x > 50.0f || filtered_angle_y > 50.0f)) {
         new_status |= STATUS_ANGLE_EXCEEDED_BIT;
     }
 
@@ -759,16 +760,17 @@ void UpdateStatusFromTelemetry(void)
     }
 
     // Check altitude <= 550 - SEVENTH BIT (Bit 6)
-    // Only if first parachute bit is active, and once activated stays on
-    if (new_status & STATUS_FIRST_PARACHUTE_BIT) {
+    if ((new_status & STATUS_FIRST_PARACHUTE_BIT) &&
+        filtered_altitude <= 600.0f) {
         new_status |= STATUS_ALTITUDE_550_BIT;
     }
 
-    // Check second parachute deployed - EIGHTH BIT (Bit 7) - LAST BIT
-    // Only if first parachute bit is active, and once activated stays on
-    if (new_status & STATUS_FIRST_PARACHUTE_BIT) {
+    // Check second parachute deployed - EIGHTH BIT (Bit 7)
+    if ((new_status & STATUS_ALTITUDE_550_BIT) &&
+        filtered_altitude <= 550.0f) {  // örnek eşik
         new_status |= STATUS_SECOND_PARACHUTE_BIT;
     }
+
     
     // Update status byte (new bits are added, existing bits are preserved)
     current_status_byte = new_status;
@@ -797,8 +799,6 @@ uint8_t CalculateChecksum(uint8_t* data, uint8_t length)
  */
 void SendStatusMessage(void)
 {
-
-
     // Build status message
     status_message[0] = STATUS_HEADER;        // 0xAA
     status_message[1] = current_status_byte;  // Status byte
