@@ -367,13 +367,16 @@ int main(void)
   lwgps_init(&gps);
   HAL_UART_Receive_IT(&huart2, &rx_data, 1);
   
-  // Initialize UART1 receive interrupt for commands
-  HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
-  
-  // Initialize UART1 receive interrupt for SUT telemetry (using DMA or separate buffer)
-  // We'll use a polling approach for SUT telemetry since UART1 is busy with commands
-  
-  HAL_Delay(200);
+     // Initialize UART1 receive interrupt for commands
+   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
+   
+   // Initialize command buffer with zeros to ensure proper sliding window operation
+   memset(uart1_cmd_buffer, 0, CMD_LENGTH);
+   
+   // Initialize UART1 receive interrupt for SUT telemetry (using DMA or separate buffer)
+   // We'll use a polling approach for SUT telemetry since UART1 is busy with commands
+   
+   HAL_Delay(200);
 
   sensor_data_t accel_data, gyro_data;
   uint32_t debug_counter = 0;
@@ -854,13 +857,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         }
 
     else if (huart == &huart1) {
-        // Check if SUT mode is enabled and process telemetry data
+        // Always check for commands first (commands have priority)
+        ProcessUART1Command(uart1_rx_data);
+        
+        // If SUT mode is enabled, also process telemetry data
         if (uart1_sending_enabled == 2) {
             ProcessIncomingData(uart1_rx_data);
-        }
-        // Otherwise process as command data
-        else {
-            ProcessUART1Command(uart1_rx_data);
         }
         
         // Re-arm reception for next byte
@@ -1370,11 +1372,13 @@ void ProcessUART1Command(uint8_t data) {
     // Check for timeout (100ms) to reset command buffer
     if (current_time - uart1_last_byte_time > 100) {
         uart1_cmd_index = 0;
+        // Reset buffer to zeros on timeout
+        memset(uart1_cmd_buffer, 0, CMD_LENGTH);
     }
     
     uart1_last_byte_time = current_time;
     
-    // Store byte in command buffer
+    // Store byte in command buffer if we have space
     if (uart1_cmd_index < CMD_LENGTH) {
         uart1_cmd_buffer[uart1_cmd_index++] = data;
     }
