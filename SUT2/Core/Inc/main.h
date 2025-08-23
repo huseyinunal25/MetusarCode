@@ -28,8 +28,6 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f1xx_hal.h"
-float ReadFloatBE(uint8_t *data);
-
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */

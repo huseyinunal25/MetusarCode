@@ -22,26 +22,13 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "stm32f1xx_hal.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-// Flight event flags structure
-typedef struct {
-    uint16_t launch_detected : 1;
-    uint16_t motor_burnout_delay_completed : 1;
-    uint16_t min_altitude_reached : 1;
-    uint16_t excessive_tilt_detected : 1;
-    uint16_t descent_detected : 1;
-    uint16_t drogue_deployment_issued : 1;
-    uint16_t altitude_below_main_threshold : 1;
-    uint16_t main_parachute_deployment_issued : 1;
-    uint16_t reserved : 8;
-} FlightStatus_t;
-
 // Telemetry data structure
 typedef struct {
     float altitude;
@@ -53,50 +40,30 @@ typedef struct {
     float angle_y;
     float angle_z;
 } TelemetryData_t;
-
-// Command types
-typedef enum {
-    CMD_NONE = 0x00,
-    CMD_START_SIT = 0x20,
-    CMD_START_SUT = 0x22,
-    CMD_STOP_TEST = 0x24
-} CommandType_t;
-
-// System state
-typedef enum {
-    STATE_IDLE = 0,
-    STATE_SENSOR_MONITORING,
-    STATE_SYNTHETIC_FLIGHT
-} SystemState_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-// Flight parameters
-#define LAUNCH_ACCELERATION_THRESHOLD 10.0f      // m/s²
-#define MOTOR_BURNOUT_DELAY_MS 5000             // 5 seconds
-#define MIN_ALTITUDE_THRESHOLD 1500.0f           // meters
-#define EXCESSIVE_TILT_THRESHOLD 60.0f           // degrees
-#define MAIN_PARACHUTE_ALTITUDE 550.0f           // meters
-
-// Packet constants
 #define TELEMETRY_HEADER 0xAB
-#define COMMAND_HEADER 0xAA
 #define FOOTER_1 0x0D
 #define FOOTER_2 0x0A
+#define PACKET_SIZE 36
 
-// GPIO pins for parachute deployment
-#define DROGUE_PARACHUTE_PIN GPIO_PIN_14
-#define MAIN_PARACHUTE_PIN GPIO_PIN_15
-#define DROGUE_PARACHUTE_PORT GPIOB
-#define MAIN_PARACHUTE_PORT GPIOB
+// New status message format
+#define STATUS_HEADER 0xAA
+#define STATUS_FOOTER_1 0x0D
+#define STATUS_FOOTER_2 0x0A
+#define STATUS_MESSAGE_SIZE 6
 
-uint8_t tmp[4];
-
-// Buffer sizes
-#define TELEMETRY_BUFFER_SIZE 36
-#define COMMAND_BUFFER_SIZE 5
-#define STATUS_BUFFER_SIZE 6
+// Status bit definitions (sequential activation from LSB to MSB)
+#define STATUS_ROCKET_FIRED_BIT      (1 << 0)  // Bit 0 - FIRST
+#define STATUS_WAITED_5SN_BIT        (1 << 1)  // Bit 1 - SECOND
+#define STATUS_MIN_ALTITUDE_BIT      (1 << 2)  // Bit 2 - THIRD
+#define STATUS_ANGLE_EXCEEDED_BIT    (1 << 3)  // Bit 3 - FOURTH
+#define STATUS_ALTITUDE_DECREASING_BIT (1 << 4) // Bit 4 - FIFTH
+#define STATUS_FIRST_PARACHUTE_BIT   (1 << 5)  // Bit 5 - SIXTH (moved from bit 6)
+#define STATUS_ALTITUDE_550_BIT      (1 << 6)  // Bit 6 - SEVENTH (moved from bit 5)
+#define STATUS_SECOND_PARACHUTE_BIT  (1 << 7)  // Bit 7 - LAST
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -109,58 +76,68 @@ I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim1;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
-// Global variables
-FlightStatus_t flight_status = {0};
-TelemetryData_t current_telemetry = {0};
-SystemState_t system_state = STATE_IDLE;
+TelemetryData_t telemetry_data = {0};
+uint8_t rx_buffer[PACKET_SIZE];
+uint8_t packet_received = 0;
 
-// Timing variables
-uint32_t launch_timestamp = 0;
-uint32_t last_status_transmission = 0;
-uint32_t status_transmission_interval = 1000; // 1 second
+// Simple buffer for incoming data
+uint8_t incoming_buffer[PACKET_SIZE * 4] = {0}; // Increased to 4x packet size for better buffering
+uint16_t buffer_index = 0;
+uint8_t uart_busy = 0; // Flag to prevent conflicts
 
-// Buffers
-uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
-uint8_t command_buffer[COMMAND_BUFFER_SIZE];
-uint8_t status_buffer[STATUS_BUFFER_SIZE];
+// Timer variables
+TIM_HandleTypeDef htim2;
+uint32_t timer_tick = 0;
+uint32_t packets_received_count = 0; // Counter for received packets
 
-// Moving average filter for sensor data
+// Status tracking variables
+uint8_t current_status_byte = 0x00;
+float previous_altitude = 0.0f;
+uint32_t rocket_fired_timestamp = 0;
+uint8_t status_sent = 0; // Flag to track if status was already sent
+
+// Filtering variables for telemetry data
 #define FILTER_SIZE 5
 float altitude_filter[FILTER_SIZE] = {0};
 float accel_z_filter[FILTER_SIZE] = {0};
+float angle_x_filter[FILTER_SIZE] = {0};
+float angle_y_filter[FILTER_SIZE] = {0};
 uint8_t filter_index = 0;
-
-// Peak altitude tracking
-float peak_altitude = 0.0f;
+uint8_t filter_filled = 0; // Flag to indicate if filter is filled
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-void ProcessTelemetryPacket(uint8_t* packet);
-void ProcessCommandPacket(uint8_t* packet);
-void UpdateFlightStatus(void);
-void DeployDrogueParachute(void);
-void DeployMainParachute(void);
-void TransmitStatus(void);
+void ParseTelemetryPacket(uint8_t* packet);
+void PrintTelemetryData(void);
+void ProcessIncomingData(uint8_t new_byte);
+static void MX_TIM2_Init(void);
+void TimerCallback(void);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
+void UpdateStatusFromTelemetry(void);
+void SendStatusMessage(void);
 uint8_t CalculateChecksum(uint8_t* data, uint8_t length);
-void ResetSystem(void);
-float ApplyMovingAverageFilter(float* filter, float new_value);
-void InitializeGPIO(void);
-
-char debug_msg[100];
-
+void ApplyFiltering(void);
+float GetFilteredValue(float* filter_array);
+uint8_t status_message[STATUS_MESSAGE_SIZE];
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -197,31 +174,30 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  InitializeGPIO();
-
-  // Enable UART1 receive interrupt for commands (5 bytes)
-  HAL_UART_Receive_IT(&huart1, command_buffer, COMMAND_BUFFER_SIZE);
-
-  // Also enable interrupt for telemetry data (36 bytes)
-  // Note: We'll need to handle both types of packets
-
-  // For testing: Automatically start SUT mode
-  // Remove this in production
-  system_state = STATE_SYNTHETIC_FLIGHT;
+  // Enable global interrupts
+  __enable_irq();
   
-  // Send initial status to verify UART is working
-  HAL_Delay(1000); // Wait 1 second
-  TransmitStatus();
+  // Start interrupt-driven UART reception on UART1
+  HAL_UART_Receive_IT(&huart1, &incoming_buffer[buffer_index], 1);
+
+  // Configure NVIC for TIM2 interrupt
+  HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(TIM2_IRQn);
   
-  // Send a test message to verify UART transmission
-  uint8_t test_msg[] = "ROCKET CONTROL SYSTEM READY\r\n";
-  HAL_UART_Transmit(&huart1, test_msg, sizeof(test_msg)-1, 100);
+  // Configure NVIC for UART1 interrupt
+  HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  
+  // Start timer interrupt (every 5ms for better performance)
+  HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -229,61 +205,23 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	snprintf(debug_msg, sizeof(debug_msg), "Altitude: %.2f m\r\n", current_telemetry.altitude);
-	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-	HAL_Delay(10);
-
 
     /* USER CODE BEGIN 3 */
-    // Get current time once for this loop iteration
-    uint32_t current_time = HAL_GetTick();
-    
-    // Process incoming telemetry data
-    if (system_state != STATE_IDLE) {
-      // Check for telemetry data (this would typically come from sensors)
-      // For now, we'll simulate telemetry data reception
-      
-      // Update flight status based on current telemetry
-      UpdateFlightStatus();
-      
-      // Transmit status periodically
-      if (current_time - last_status_transmission >= status_transmission_interval) {
-        TransmitStatus();
-        last_status_transmission = current_time;
-      }
-    } else {
-      // Even in IDLE state, transmit status to show system is alive
-      if (current_time - last_status_transmission >= status_transmission_interval) {
-        TransmitStatus();
-        last_status_transmission = current_time;
-      }
+    // Check if we have received data
+    if (packet_received) {
+      packet_received = 0;
+
+      // Process the received packet
+      ParseTelemetryPacket(rx_buffer);
+      // Apply filtering to telemetry values
+      ApplyFiltering();
+      // Update status based on telemetry data
+      UpdateStatusFromTelemetry();
+      // Send status message instead of telemetry data
+      SendStatusMessage();
+
+
     }
-    
-    // Check if we have received telemetry data via UART1
-    // This would typically be done in an interrupt, but for now we'll check here
-    /*if (system_state != STATE_IDLE) {
-      // Process any received telemetry data
-      // The ProcessTelemetryPacket function should be called from UART interrupt
-      // when telemetry data is received
-      
-      // For testing purposes, let's simulate some telemetry data
-      // In a real implementation, this would come from sensors
-      static uint32_t last_simulated_telemetry = 0;
-      if (current_time - last_simulated_telemetry >= 2000) { // Every 2 seconds
-        last_simulated_telemetry = current_time;
-        
-        // Simulate increasing altitude and acceleration
-        if (current_telemetry.altitude < 2000.0f) {
-          current_telemetry.altitude += 50.0f;
-        }
-        if (current_telemetry.accel_z < 20.0f) {
-          current_telemetry.accel_z += 2.0f;
-        }
-        
-        // Update flight status with simulated data
-        UpdateFlightStatus();
-      }
-    }*/
   }
   /* USER CODE END 3 */
 }
@@ -400,6 +338,53 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_EXTERNAL1;
+  sSlaveConfig.InputTrigger = TIM_TS_ITR0;
+  if (HAL_TIM_SlaveConfigSynchro(&htim1, &sSlaveConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -412,7 +397,7 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE END USART1_Init 0 */
 
   /* USER CODE BEGIN USART1_Init 1 */
-
+  // UART1 configured for both TX and RX (115200 baud, 8N1)
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
   huart1.Init.BaudRate = 115200;
@@ -499,6 +484,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -521,353 +522,340 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
- * @brief Initialize GPIO pins for parachute deployment
+ * @brief Parse telemetry packet from UART
+ * @param packet: Pointer to 36-byte packet
  */
-void InitializeGPIO(void)
+void ParseTelemetryPacket(uint8_t* packet)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    
-    // Enable GPIOB clock if not already enabled
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    
-    // Configure drogue parachute pin (GPIO 14)
-    GPIO_InitStruct.Pin = DROGUE_PARACHUTE_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(DROGUE_PARACHUTE_PORT, &GPIO_InitStruct);
-    
-    // Configure main parachute pin (GPIO 15)
-    GPIO_InitStruct.Pin = MAIN_PARACHUTE_PIN;
-    HAL_GPIO_Init(MAIN_PARACHUTE_PORT, &GPIO_InitStruct);
-    
-    // Set both pins to low initially
-    HAL_GPIO_WritePin(DROGUE_PARACHUTE_PORT, DROGUE_PARACHUTE_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MAIN_PARACHUTE_PORT, MAIN_PARACHUTE_PIN, GPIO_PIN_RESET);
-}
-
-/**
- * @brief Calculate checksum for packet validation
- * @param data: Pointer to data array
- * @param length: Length of data array
- * @retval Calculated checksum
- */
-uint8_t CalculateChecksum(uint8_t* data, uint8_t length)
-{
-    uint8_t checksum = 0;
-    for (uint8_t i = 0; i < length; i++) {
-        checksum += data[i];
-    }
-    return checksum;
-}
-
-/**
- * @brief Apply moving average filter to reduce sensor noise
- * @param filter: Pointer to filter array
- * @param new_value: New sensor value
- * @retval Filtered value
- */
-float ApplyMovingAverageFilter(float* filter, float new_value)
-{
-    filter[filter_index] = new_value;
-    filter_index = (filter_index + 1) % FILTER_SIZE;
-    
-    float sum = 0.0f;
-    for (uint8_t i = 0; i < FILTER_SIZE; i++) {
-        sum += filter[i];
-    }
-    
-    return sum / FILTER_SIZE;
-}
-
-/**
- * @brief Process incoming telemetry packet
- * @param packet: Pointer to telemetry packet
- */
-void ProcessTelemetryPacket(uint8_t* packet)
-{
-    // Validate packet header and footer
+    // Check header and footer
     if (packet[0] != TELEMETRY_HEADER || 
         packet[34] != FOOTER_1 || 
         packet[35] != FOOTER_2) {
-        return; // Invalid packet
+        return;
     }
     
-    // Validate checksum
-    uint8_t calculated_checksum = CalculateChecksum(packet, 34);
-    if (calculated_checksum != packet[34]) {
-        return; // Checksum mismatch
-    }
+    // Parse big-endian float values - need to reverse byte order for ARM (little-endian)
+    // Altitude (bytes 2-5) - reverse order: 4,3,2,1
+    uint8_t alt_bytes[4] = {packet[4], packet[3], packet[2], packet[1]};
+    memcpy(&telemetry_data.altitude, alt_bytes, 4);
     
-    /*char debug_msg[100];
-	for (int i = 0; i < 36; i++) {   // paket uzunluğu 36 byte ise
-		int len = sprintf(debug_msg, "%02X ", packet[i]);
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, len, 100);
-	}*/
-	HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 100);
-    // Extract telemetry data (little-endian IEEE 754 float)
-    memcpy(&current_telemetry.altitude, &packet[1], 4);
-    memcpy(&current_telemetry.pressure, &packet[5], 4);
-    memcpy(&current_telemetry.accel_x, &packet[9], 4);
-    memcpy(&current_telemetry.accel_y, &packet[13], 4);
-    memcpy(&current_telemetry.accel_z, &packet[17], 4);
-    memcpy(&current_telemetry.angle_x, &packet[21], 4);
-    memcpy(&current_telemetry.angle_y, &packet[25], 4);
-    memcpy(&current_telemetry.angle_z, &packet[29], 4);
-
+    // Pressure (bytes 6-9) - reverse order: 8,7,6,5
+    uint8_t press_bytes[4] = {packet[8], packet[7], packet[6], packet[5]};
+    memcpy(&telemetry_data.pressure, press_bytes, 4);
     
-    // Apply moving average filter to reduce noise
-    current_telemetry.altitude = ApplyMovingAverageFilter(altitude_filter, current_telemetry.altitude);
-    current_telemetry.accel_z = ApplyMovingAverageFilter(accel_z_filter, current_telemetry.accel_z);
+    // Acceleration X (bytes 10-13) - reverse order: 12,11,10,9
+    uint8_t accel_x_bytes[4] = {packet[12], packet[11], packet[10], packet[9]};
+    memcpy(&telemetry_data.accel_x, accel_x_bytes, 4);
+    
+    // Acceleration Y (bytes 14-17) - reverse order: 16,15,14,13
+    uint8_t accel_y_bytes[4] = {packet[16], packet[15], packet[14], packet[13]};
+    memcpy(&telemetry_data.accel_y, accel_y_bytes, 4);
+    
+    // Acceleration Z (bytes 18-21) - reverse order: 20,19,18,17
+    uint8_t accel_z_bytes[4] = {packet[20], packet[19], packet[18], packet[17]};
+    memcpy(&telemetry_data.accel_z, accel_z_bytes, 4);
+    
+    // Angle X (bytes 22-25) - reverse order: 24,23,22,21
+    uint8_t angle_x_bytes[4] = {packet[24], packet[23], packet[22], packet[21]};
+    memcpy(&telemetry_data.angle_x, angle_x_bytes, 4);
+    
+    // Angle Y (bytes 26-29) - reverse order: 28,27,26,25
+    uint8_t angle_y_bytes[4] = {packet[28], packet[27], packet[26], packet[25]};
+    memcpy(&telemetry_data.angle_y, angle_y_bytes, 4);
+    
+    // Angle Z (bytes 30-33) - reverse order: 32,31,30,29
+    uint8_t angle_z_bytes[4] = {packet[32], packet[31], packet[30], packet[29]};
+    memcpy(&telemetry_data.angle_z, angle_z_bytes, 4);
 }
 
 /**
- * @brief Process incoming command packet
- * @param packet: Pointer to command packet
+ * @brief Print parsed telemetry data via UART
  */
-void ProcessCommandPacket(uint8_t* packet)
+/**
+ * @brief Process incoming byte and look for complete packets
+ * @param new_byte: New byte received
+ */
+void ProcessIncomingData(uint8_t new_byte)
 {
-    // Validate packet header and footer
-    if (packet[0] != COMMAND_HEADER || 
-        packet[3] != FOOTER_1 || 
-        packet[4] != FOOTER_2) {
-        return; // Invalid packet
-    }
-    
-    // Validate checksum
-    uint8_t calculated_checksum = CalculateChecksum(packet, 3);
-    if (calculated_checksum != packet[3]) {
-        return; // Checksum mismatch
-    }
-    
-    CommandType_t command = (CommandType_t)packet[1];
-    
-    switch (command) {
-        case CMD_START_SIT:
-            system_state = STATE_SENSOR_MONITORING;
-            ResetSystem();
+    // Store byte in buffer
+    incoming_buffer[buffer_index] = new_byte;
+
+    // Simple and fast packet detection
+    static uint8_t packet_state = 0;
+    static uint8_t byte_count = 0;
+
+    switch (packet_state) {
+        case 0: // Looking for header
+            if (new_byte == TELEMETRY_HEADER) {
+                packet_state = 1;
+                byte_count = 1;
+            }
             break;
-            
-        case CMD_START_SUT:
-            system_state = STATE_SYNTHETIC_FLIGHT;
-            ResetSystem();
+
+        case 1: // Collecting packet data
+            byte_count++;
+            if (byte_count >= PACKET_SIZE) {
+                // Check footer
+                if (incoming_buffer[(buffer_index - PACKET_SIZE + 1 + PACKET_SIZE - 2) % (PACKET_SIZE * 4)] == FOOTER_1 &&
+                    incoming_buffer[(buffer_index - PACKET_SIZE + 1 + PACKET_SIZE - 1) % (PACKET_SIZE * 4)] == FOOTER_2) {
+
+                    // Copy complete packet to rx_buffer
+                    uint16_t start_idx = (buffer_index - PACKET_SIZE + 1) % (PACKET_SIZE * 4);
+                    for (uint8_t i = 0; i < PACKET_SIZE; i++) {
+                        rx_buffer[i] = incoming_buffer[(start_idx + i) % (PACKET_SIZE * 4)];
+                    }
+
+                    // Set flag for main loop to process
+                    packet_received = 1;
+                    packets_received_count++; // Increment packet counter
+                }
+
+                // Reset for next packet
+                packet_state = 0;
+                byte_count = 0;
+            }
             break;
-            
-        case CMD_STOP_TEST:
-            system_state = STATE_IDLE;
-            ResetSystem();
-            break;
-            
-        default:
-            break;
     }
-}
-
-/**
- * @brief Update flight status based on current telemetry data
- */
-void UpdateFlightStatus(void)
-{
-    uint32_t current_time = HAL_GetTick();
-    
-    // Launch detection
-    if (!flight_status.launch_detected && 
-        fabsf(current_telemetry.accel_z) > LAUNCH_ACCELERATION_THRESHOLD) {
-        flight_status.launch_detected = 1;
-        launch_timestamp = current_time;
-        strcpy(debug_msg, "launch_detected");
-        HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-        HAL_Delay(10);
-   }
-    
-    // Motor burnout delay (5 seconds after launch)
-    if (flight_status.launch_detected && !flight_status.motor_burnout_delay_completed &&
-        (current_time - launch_timestamp) >= MOTOR_BURNOUT_DELAY_MS) {
-        flight_status.motor_burnout_delay_completed = 1;
-        strcpy(debug_msg, "burn out");
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-		HAL_Delay(10);
-    }
-    
-    // Minimum altitude threshold
-    if (!flight_status.min_altitude_reached && 
-        current_telemetry.altitude > MIN_ALTITUDE_THRESHOLD) {
-        flight_status.min_altitude_reached = 1;
-        strcpy(debug_msg, "min_altitude");
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-		HAL_Delay(10);
-    }
-    
-    // Excessive tilt detection
-    if (!flight_status.excessive_tilt_detected &&
-        (fabsf(current_telemetry.angle_x) > EXCESSIVE_TILT_THRESHOLD ||
-         fabsf(current_telemetry.angle_y) > EXCESSIVE_TILT_THRESHOLD)) {
-        flight_status.excessive_tilt_detected = 1;
-        strcpy(debug_msg, "angle detected");
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-		HAL_Delay(10);
-    }
-    
-    // Track peak altitude for apogee detection
-    if (current_telemetry.altitude > peak_altitude) {
-        peak_altitude = current_telemetry.altitude;
-    }
-    
-    // Descent detection (apogee passed)
-    if (!flight_status.descent_detected && 
-        flight_status.min_altitude_reached &&
-        current_telemetry.altitude < (peak_altitude - 10.0f)) { // 10m tolerance
-        flight_status.descent_detected = 1;
-        strcpy(debug_msg, "descent detected");
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-		HAL_Delay(10);
-    }
-    
-    // Drogue parachute deployment
-    if (!flight_status.drogue_deployment_issued &&
-        flight_status.launch_detected &&
-        flight_status.motor_burnout_delay_completed &&
-        flight_status.min_altitude_reached &&
-        flight_status.excessive_tilt_detected &&
-        flight_status.descent_detected) {
-        DeployDrogueParachute();
-    }
-    
-    // Main parachute altitude threshold
-    if (!flight_status.altitude_below_main_threshold &&
-        current_telemetry.altitude < MAIN_PARACHUTE_ALTITUDE) {
-        flight_status.altitude_below_main_threshold = 1;
-        strcpy(debug_msg, "altitude550 detected");
-		HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-		HAL_Delay(10);
-    }
-    
-    // Main parachute deployment
-    if (!flight_status.main_parachute_deployment_issued &&
-        flight_status.altitude_below_main_threshold && flight_status.descent_detected) {
-        DeployMainParachute();
-    }
-}
-
-/**
- * @brief Deploy drogue parachute
- */
-void DeployDrogueParachute(void)
-{
-    HAL_GPIO_WritePin(DROGUE_PARACHUTE_PORT, DROGUE_PARACHUTE_PIN, GPIO_PIN_SET);
-    flight_status.drogue_deployment_issued = 1;
-    
-    // Keep pin high for 100ms to ensure deployment
-    HAL_Delay(100);
-    HAL_GPIO_WritePin(DROGUE_PARACHUTE_PORT, DROGUE_PARACHUTE_PIN, GPIO_PIN_RESET);
-    HAL_Delay(10);
-    strcpy(debug_msg, "dragparachute deployed");
-	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-	HAL_Delay(10);
-
-}
-
-/**
- * @brief Deploy main parachute
- */
-void DeployMainParachute(void)
-{
-    HAL_GPIO_WritePin(MAIN_PARACHUTE_PORT, MAIN_PARACHUTE_PIN, GPIO_PIN_SET);
-    flight_status.main_parachute_deployment_issued = 1;
-    
-    // Keep pin high for 100ms to ensure deployment
-    HAL_Delay(100);
-    HAL_GPIO_WritePin(MAIN_PARACHUTE_PORT, MAIN_PARACHUTE_PIN, GPIO_PIN_RESET);
-    HAL_Delay(10);
-    strcpy(debug_msg, "parachute deployed");
-	HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 100);
-	HAL_Delay(10);
-}
-
-/**
- * @brief Transmit current flight status
- */
-void TransmitStatus(void)
-{
-    // Prepare status packet
-    status_buffer[0] = COMMAND_HEADER;
-    
-    // Convert flight status to 16-bit word
-    uint16_t status_word = 0;
-    status_word |= flight_status.launch_detected << 7;
-    status_word |= (flight_status.motor_burnout_delay_completed << 6);
-    status_word |= (flight_status.min_altitude_reached << 5);
-    status_word |= (flight_status.excessive_tilt_detected << 4);
-    status_word |= (flight_status.descent_detected << 3);
-    status_word |= (flight_status.drogue_deployment_issued << 2);
-    status_word |= (flight_status.altitude_below_main_threshold << 1);
-    status_word |= (flight_status.main_parachute_deployment_issued);
-
-    status_buffer[1] = (uint8_t)(status_word & 0xFF);        // Lower byte
-    status_buffer[2] = (uint8_t)((status_word >> 8) & 0xFF); // Upper byte
-    
-    // Calculate and add checksum
-    status_buffer[3] = CalculateChecksum(status_buffer, 3);
-    
-    // Add footer
-    status_buffer[4] = FOOTER_1;
-    status_buffer[5] = FOOTER_2;
-    
-    // Transmit status packet via UART1
-    HAL_UART_Transmit(&huart1, status_buffer, STATUS_BUFFER_SIZE, 100);
-}
-
-/**
- * @brief Reset system to initial state
- */
-void ResetSystem(void)
-{
-    // Reset flight status
-    memset(&flight_status, 0, sizeof(FlightStatus_t));
-    
-    // Reset telemetry data
-    memset(&current_telemetry, 0, sizeof(TelemetryData_t));
-    
-    // Reset filters
-    memset(altitude_filter, 0, sizeof(altitude_filter));
-    memset(accel_z_filter, 0, sizeof(accel_z_filter));
-    filter_index = 0;
-    
-    // Reset peak altitude
-    peak_altitude = 0.0f;
-    
-    // Reset timing variables
-    launch_timestamp = 0;
-    last_status_transmission = 0;
-    
-    // Reset GPIO pins
-    HAL_GPIO_WritePin(DROGUE_PARACHUTE_PORT, DROGUE_PARACHUTE_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MAIN_PARACHUTE_PORT, MAIN_PARACHUTE_PIN, GPIO_PIN_RESET);
 }
 
 /**
  * @brief UART receive complete callback
+ * @param huart: UART handle
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+  if (huart->Instance == USART1) {
+    // Process the received byte immediately
+    ProcessIncomingData(incoming_buffer[buffer_index]);
+
+    // Move to next buffer position
+    buffer_index = (buffer_index + 1) % (PACKET_SIZE * 4);
+
+    // Continue receiving next byte immediately - no delays
+    HAL_UART_Receive_IT(&huart1, &incoming_buffer[buffer_index], 1);
+  }
+}
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
     if (huart->Instance == USART1) {
-        // Check if this is a command or telemetry packet
-        if (command_buffer[0] == COMMAND_HEADER) {
-            // This is a command packet (5 bytes)
-            ProcessCommandPacket(command_buffer);
-            // Re-enable receive interrupt for next packet
-            HAL_UART_Receive_IT(&huart1, command_buffer, COMMAND_BUFFER_SIZE);
-        } else if (command_buffer[0] == TELEMETRY_HEADER) {
-            // This is telemetry data - we need to receive the full 36-byte packet
-            // For now, just acknowledge we received telemetry header
-            // In a real implementation, you'd receive the full 36-byte packet
-            // Re-enable receive interrupt for next packet
-            HAL_UART_Receive_IT(&huart1, command_buffer, TELEMETRY_BUFFER_SIZE);
-        } else {
-            // Unknown packet type, re-enable receive interrupt
-            HAL_UART_Receive_IT(&huart1, command_buffer, COMMAND_BUFFER_SIZE);
+        // USART1 ile gönderim tamamlandı
+        uart_busy = 0; // Örn: tekrar gönderime izin ver
+    }
+    else if (huart->Instance == USART2) {
+        // USART2 için yapılacak işlemler
+    }
+    else if (huart->Instance == USART3) {
+        // USART3 için yapılacak işlemler
+    }
+}
+
+/**
+ * @brief Timer2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 71999; // 72MHz / 72000 = 1kHz
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4; // 1kHz / 5 = 200Hz (5ms period) - faster for better responsiveness
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+ * @brief Timer callback function - called every 5ms
+ */
+void TimerCallback(void)
+{
+  timer_tick++;
+
+  // Timer callback - minimal processing
+}
+
+/**
+ * @brief Timer period elapsed callback
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2) {
+    TimerCallback();
+  }
+}
+
+/**
+ * @brief Update status bits based on telemetry data
+ */
+void UpdateStatusFromTelemetry(void)
+{
+    uint8_t new_status = current_status_byte; // Start with current status (preserve existing bits)
+    uint32_t current_time = HAL_GetTick();
+
+    // Get filtered values
+    float filtered_altitude = GetFilteredValue(altitude_filter);
+    float filtered_accel_z = GetFilteredValue(accel_z_filter);
+    float filtered_angle_x = GetFilteredValue(angle_x_filter);
+    float filtered_angle_y = GetFilteredValue(angle_y_filter);
+
+    // Check rocket fired (accel z > 30) - FIRST BIT (Bit 0)
+    // Once activated, this bit stays on permanently
+    if (filtered_accel_z > 30.0f) {
+        new_status |= STATUS_ROCKET_FIRED_BIT;
+        if (!(current_status_byte & STATUS_ROCKET_FIRED_BIT)) {
+            // Rocket just fired, record timestamp
+            rocket_fired_timestamp = current_time;
         }
     }
+
+    // Check waited 5 seconds after rocket fired - SECOND BIT (Bit 1)
+    // Only if rocket fired bit is active, and once activated stays on
+    if ((new_status & STATUS_ROCKET_FIRED_BIT) &&
+        (current_time - rocket_fired_timestamp >= 5000)) {
+        new_status |= STATUS_WAITED_5SN_BIT;
+    }
+
+    // Check minimum altitude (>= 1500) - THIRD BIT (Bit 2)
+    // Only if waited 5s bit is active, and once activated stays on
+    if ((new_status & STATUS_WAITED_5SN_BIT) &&
+        filtered_altitude >= 1500.0f) {
+        new_status |= STATUS_MIN_ALTITUDE_BIT;
+    }
+
+    // Check angle exceeded (x or y > 60) - FOURTH BIT (Bit 3)
+    // Only if minimum altitude bit is active, and once activated stays on
+    if ((new_status & STATUS_MIN_ALTITUDE_BIT) &&
+        (filtered_angle_x > 60.0f || filtered_angle_y > 60.0f)) {
+        new_status |= STATUS_ANGLE_EXCEEDED_BIT;
+    }
+
+    // Check altitude decreasing - FIFTH BIT (Bit 4)
+    // Only if angle exceeded bit is active, and once activated stays on
+    if ((new_status & STATUS_ANGLE_EXCEEDED_BIT) &&
+        filtered_altitude < previous_altitude) {
+        new_status |= STATUS_ALTITUDE_DECREASING_BIT;
+        // First parachute deployed at the same time as altitude decreasing - SIXTH BIT (Bit 5)
+        new_status |= STATUS_FIRST_PARACHUTE_BIT;
+    }
+
+    // Check altitude <= 550 - SEVENTH BIT (Bit 6)
+    // Only if first parachute bit is active, and once activated stays on
+    if (new_status & STATUS_FIRST_PARACHUTE_BIT) {
+        new_status |= STATUS_ALTITUDE_550_BIT;
+    }
+
+    // Check second parachute deployed - EIGHTH BIT (Bit 7) - LAST BIT
+    // Only if first parachute bit is active, and once activated stays on
+    if (new_status & STATUS_FIRST_PARACHUTE_BIT) {
+        new_status |= STATUS_SECOND_PARACHUTE_BIT;
+    }
+    
+    // Update status byte (new bits are added, existing bits are preserved)
+    current_status_byte = new_status;
+
+    // Store current filtered altitude for next comparison
+    previous_altitude = filtered_altitude;
+}
+
+/**
+ * @brief Calculate checksum for status message
+ * @param data: Pointer to data array
+ * @param length: Length of data (excluding checksum)
+ * @retval Checksum value
+ */
+uint8_t CalculateChecksum(uint8_t* data, uint8_t length)
+{
+    uint16_t sum = 0;
+    for (uint8_t i = 0; i < length; i++) {
+        sum += data[i];
+    }
+    return (uint8_t)(sum % 256);
+}
+
+/**
+ * @brief Send status message in the new 6-byte format
+ */
+void SendStatusMessage(void)
+{
+
+
+    // Build status message
+    status_message[0] = STATUS_HEADER;        // 0xAA
+    status_message[1] = current_status_byte;  // Status byte
+    status_message[2] = 0x00;                // Reserved
+    status_message[3] = 0x00;                // Checksum (calculated below)
+    status_message[4] = STATUS_FOOTER_1;      // 0x0D
+    status_message[5] = STATUS_FOOTER_2;      // 0x0A
+
+    // Calculate checksum (sum of bytes 0, 1, 2, 4, 5, then mod 256)
+    uint8_t checksum_data[5] = {status_message[0], status_message[1], status_message[2], status_message[4], status_message[5]};
+    status_message[3] = CalculateChecksum(checksum_data, 5);
+    // Send status message
+    if (!uart_busy) {
+        uart_busy = 1;
+        HAL_UART_Transmit_IT(&huart1, status_message, STATUS_MESSAGE_SIZE);
+    }
+
+}
+
+/**
+ * @brief Apply filtering to telemetry values
+ */
+void ApplyFiltering(void)
+{
+    // Add new values to filter arrays
+    altitude_filter[filter_index] = telemetry_data.altitude;
+    accel_z_filter[filter_index] = telemetry_data.accel_z;
+    angle_x_filter[filter_index] = telemetry_data.angle_x;
+    angle_y_filter[filter_index] = telemetry_data.angle_y;
+    
+    // Move to next filter position
+    filter_index = (filter_index + 1) % FILTER_SIZE;
+    
+    // Mark filter as filled after first complete cycle
+    if (filter_index == 0) {
+        filter_filled = 1;
+    }
+}
+
+/**
+ * @brief Get filtered value from filter array
+ * @param filter_array: Pointer to filter array
+ * @retval Filtered value (average)
+ */
+float GetFilteredValue(float* filter_array)
+{
+    if (!filter_filled) {
+        // If filter not filled yet, return current value
+        return filter_array[0];
+    }
+
+    // Calculate moving average
+    float sum = 0;
+    for (uint8_t i = 0; i < FILTER_SIZE; i++) {
+        sum += filter_array[i];
+    }
+    return sum / FILTER_SIZE;
 }
 /* USER CODE END 4 */
 
