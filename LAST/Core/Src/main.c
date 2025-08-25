@@ -45,7 +45,7 @@
 #define PACKET_HEADER_SIZE      3
 #define BUFFER_SIZE             150
 #define IMU_DATA_SIZE           14
-#define MEASUREMENT_DELAY       190
+#define MEASUREMENT_DELAY       100
 #define LORA_MAX_PAYLOAD        58
 
 #define GPS_DEBUG_RAW_NMEA      1
@@ -239,7 +239,6 @@ void initialize_kalman_filters(void);
 void adjust_kalman_parameters(void);
 bool is_device_stationary(void);
 void set_kalman_responsiveness(bool high_responsiveness);
-
 /**
  * @brief Send a 32-byte binary data package over UART1: altitude, pressure, accel x/y/z, orientation x/y/z (all float, 4 bytes each)
  */
@@ -350,36 +349,20 @@ int main(void)
   initialize_kalman_filters();
 
   /* Configure GPS to output at 5Hz */
-  uint8_t setRate5Hz[] = {
-      0xB5, 0x62,
-      0x06, 0x08,
-      0x06, 0x00,
-      0xC8, 0x00,   // 200 ms = 5 Hz
-      0x01, 0x00,   // navRate = 1
-      0x01, 0x00,   // timeRef = GPS time
-      0xDE, 0x6A    // Checksum
-  };
 
-  HAL_Delay(1000);
-  HAL_UART_Transmit(&huart2, setRate5Hz, sizeof(setRate5Hz), HAL_MAX_DELAY);
-  HAL_Delay(1000);
   
   lwgps_init(&gps);
   HAL_UART_Receive_IT(&huart2, &rx_data, 1);
   
-     // Initialize UART1 receive interrupt for commands
-   HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
-   
-   // Initialize command buffer with zeros to ensure proper sliding window operation
-   memset(uart1_cmd_buffer, 0, CMD_LENGTH);
-   
-   // Initialize UART1 receive interrupt for SUT telemetry (using DMA or separate buffer)
-   // We'll use a polling approach for SUT telemetry since UART1 is busy with commands
-   
-   HAL_Delay(200);
+  // Initialize UART1 receive interrupt for commands
+  HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
+  
+  // Initialize UART1 receive interrupt for SUT telemetry (using DMA or separate buffer)
+  // We'll use a polling approach for SUT telemetry since UART1 is busy with commands
+  
+  HAL_Delay(200);
 
   sensor_data_t accel_data, gyro_data;
-  uint32_t debug_counter = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -399,14 +382,6 @@ int main(void)
 
     /* Adjust Kalman filter parameters based on motion state */
     adjust_kalman_parameters();
-
-    /* Debug GPS data before transmission */
-#if 0
-    char debug_gps[100];
-    int gps_debug_len = sprintf(debug_gps, "GPS: valid=%d fix=%d lat=%.6f lon=%.6f\r\n",
-                               gps.is_valid, gps.fix, gps.latitude, gps.longitude);
-    HAL_UART_Transmit(&huart1, (uint8_t*)debug_gps, gps_debug_len, HAL_MAX_DELAY);
-#endif
 
     /* Transmit via LoRa */
     transmit_sensor_packet(
@@ -842,29 +817,28 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         /* Re-arm reception */
         HAL_UART_Receive_IT(&huart2, &rx_data, 1);
 
-        // Process as GPS data
-            if (rx_data != '\n' && rx_index < sizeof(rx_buffer) - 1) {
-                rx_buffer[rx_index++] = rx_data;
-                gps_data_received_count++;
-            }
-            else {
-                if (rx_index > 0) {
-                    rx_buffer[rx_index] = '\0';
-                    lwgps_process(&gps, rx_buffer, rx_index);
-                }
-                rx_index = 0;
-            }
+        if (rx_data != '\n' && rx_index < sizeof(rx_buffer) - 1) {
+            rx_buffer[rx_index++] = rx_data;
+            gps_data_received_count++;
         }
+        else {
+            if (rx_index > 0) {
+                rx_buffer[rx_index] = '\0';
+                lwgps_process(&gps, rx_buffer, rx_index);
+            }
+            rx_index = 0;
+        }
+    }
 
     else if (huart == &huart1) {
-        // Always check for commands first (commands have priority)
+        // Check for commands first (this should always work regardless of mode)
         ProcessUART1Command(uart1_rx_data);
-        
-        // If SUT mode is enabled, also process telemetry data
+
+        // If in SUT mode, also process as telemetry data
         if (uart1_sending_enabled == 2) {
             ProcessIncomingData(uart1_rx_data);
         }
-        
+
         // Re-arm reception for next byte
         HAL_UART_Receive_IT(&huart1, &uart1_rx_data, 1);
     }
@@ -1071,8 +1045,6 @@ void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, 
     }
     
     // Apply bias compensation
-    float gyro_x_comp = gyro_x - gyro_bias_x;
-    float gyro_y_comp = gyro_y - gyro_bias_y;
     float gyro_z_comp = gyro_z - gyro_bias_z;
 
     // Calculate accelerometer-based angles
@@ -1290,6 +1262,10 @@ void UpdateStatusFromTelemetry(void) {
     if ((new_status & STATUS_ALTITUDE_550_BIT) &&
         filtered_altitude <= 550.0f) {  // örnek eşik
         new_status |= STATUS_SECOND_PARACHUTE_BIT;
+
+        char debug_msg2[200];
+        sprintf(debug_msg2, "Alt:%.2f \r\n", filtered_altitude);
+        HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg2, strlen(debug_msg2), HAL_MAX_DELAY);
     }
 
     
@@ -1364,7 +1340,6 @@ void TimerCallback(void) {
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     uart_busy = 0; // Clear busy flag when transmission is complete
 }
-
 /* Command Processing Functions */
 void ProcessUART1Command(uint8_t data) {
     uint32_t current_time = HAL_GetTick();
@@ -1372,13 +1347,11 @@ void ProcessUART1Command(uint8_t data) {
     // Check for timeout (100ms) to reset command buffer
     if (current_time - uart1_last_byte_time > 100) {
         uart1_cmd_index = 0;
-        // Reset buffer to zeros on timeout
-        memset(uart1_cmd_buffer, 0, CMD_LENGTH);
     }
     
     uart1_last_byte_time = current_time;
     
-    // Store byte in command buffer if we have space
+    // Store byte in command buffer
     if (uart1_cmd_index < CMD_LENGTH) {
         uart1_cmd_buffer[uart1_cmd_index++] = data;
     }
@@ -1386,7 +1359,83 @@ void ProcessUART1Command(uint8_t data) {
     // If we have a complete command, process it
     if (uart1_cmd_index == CMD_LENGTH) {
         CheckUART1Command();
-        uart1_cmd_index = 0; // Reset for next command
+        // Note: CheckUART1Command now handles resetting uart1_cmd_index internally
+    }
+    
+    // Additional check: Look for command pattern in the last few bytes
+    // This helps detect commands that might be embedded in telemetry data
+    static uint8_t recent_bytes[10] = {0};
+    static uint8_t recent_index = 0;
+    
+    // Store recent bytes in circular buffer
+    recent_bytes[recent_index] = data;
+    recent_index = (recent_index + 1) % 10;
+    
+    // Check for command patterns in the recent bytes
+    for (int i = 0; i < 6; i++) { // Check last 6 positions
+        int idx = (recent_index - 5 + i + 10) % 10;
+        
+        // Check for SIT start command: AA 20 CA 0D 0A
+        if (recent_bytes[idx] == CMD_SIT_START_0) {
+            if (recent_bytes[(idx + 1) % 10] == CMD_SIT_START_1 &&
+                recent_bytes[(idx + 2) % 10] == CMD_SIT_START_2 &&
+                recent_bytes[(idx + 3) % 10] == CMD_SIT_START_3 &&
+                recent_bytes[(idx + 4) % 10] == CMD_SIT_START_4) {
+                
+                uart1_sending_enabled = 1; // Enable SIT mode
+                uart1_cmd_index = 0;
+                return;
+            }
+        }
+        
+        // Check for SUT start command: AA 22 CC 0D 0A
+        if (recent_bytes[idx] == CMD_SUT_START_0) {
+            if (recent_bytes[(idx + 1) % 10] == CMD_SUT_START_1 &&
+                recent_bytes[(idx + 2) % 10] == CMD_SUT_START_2 &&
+                recent_bytes[(idx + 3) % 10] == CMD_SUT_START_3 &&
+                recent_bytes[(idx + 4) % 10] == CMD_SUT_START_4) {
+                
+                uart1_sending_enabled = 2; // Enable SUT mode
+                uart1_cmd_index = 0;
+                return;
+            }
+        }
+        
+        // Check for STOP command: AA 24 CE 0D 0A
+        if (recent_bytes[idx] == CMD_STOP_0) {
+            if (recent_bytes[(idx + 1) % 10] == CMD_STOP_1 &&
+                recent_bytes[(idx + 2) % 10] == CMD_STOP_2 &&
+                recent_bytes[(idx + 3) % 10] == CMD_STOP_3 &&
+                recent_bytes[(idx + 4) % 10] == CMD_STOP_4) {
+                
+                // Found complete stop command!
+                uart1_sending_enabled = 0; // Disable all sending
+                
+                // Reset all status bits to zero
+                current_status_byte = 0x00;
+                previous_altitude = 0.0f;
+                rocket_fired_timestamp = 0;
+                status_sent = 0;
+                
+                // Reset filter arrays
+                for (int j = 0; j < FILTER_SIZE; j++) {
+                    altitude_filter[j] = 0.0f;
+                    accel_z_filter[j] = 0.0f;
+                    angle_x_filter[j] = 0.0f;
+                    angle_y_filter[j] = 0.0f;
+                }
+                filter_index = 0;
+                filter_filled = 0;
+                
+                // Reset packet counters
+                packets_received_count = 0;
+                packet_received = 0;
+                
+                // Reset command buffer
+                uart1_cmd_index = 0;
+                return;
+            }
+        }
     }
 }
 
@@ -1403,6 +1452,8 @@ void CheckUART1Command(void) {
         uart1_cmd_buffer[4] == CMD_SIT_START_4) {
         
         uart1_sending_enabled = 1; // Enable SIT mode
+        uart1_cmd_index = 0; // Reset for next command
+        return;
     }
     
     // Check for SUT start command: AA 22 CC 0D 0A
@@ -1413,6 +1464,8 @@ void CheckUART1Command(void) {
              uart1_cmd_buffer[4] == CMD_SUT_START_4) {
         
         uart1_sending_enabled = 2; // Enable SUT mode
+        uart1_cmd_index = 0; // Reset for next command
+        return;
     }
     
     // Check for STOP command: AA 24 CE 0D 0A
@@ -1423,9 +1476,32 @@ void CheckUART1Command(void) {
              uart1_cmd_buffer[4] == CMD_STOP_4) {
         
         uart1_sending_enabled = 0; // Disable all sending
+        
+        // Reset all status bits to zero
+        current_status_byte = 0x00;
+        previous_altitude = 0.0f;
+        rocket_fired_timestamp = 0;
+        status_sent = 0;
+        
+        // Reset filter arrays
+        for (int i = 0; i < FILTER_SIZE; i++) {
+            altitude_filter[i] = 0.0f;
+            accel_z_filter[i] = 0.0f;
+            angle_x_filter[i] = 0.0f;
+            angle_y_filter[i] = 0.0f;
+        }
+        filter_index = 0;
+        filter_filled = 0;
+        
+        // Reset packet counters
+        packets_received_count = 0;
+        packet_received = 0;
+        
+        uart1_cmd_index = 0; // Reset for next command
+        return;
     }
     
-    // Reset command buffer
+    // If no valid command found, reset command buffer
     uart1_cmd_index = 0;
 }
 
