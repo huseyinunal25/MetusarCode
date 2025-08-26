@@ -83,6 +83,7 @@ class RocketWidget(QWidget):
         # Başlangıçta roket yukarı bakıyor (0, -1, 0)
         # Pitch: pozitif = burun yukarı, negatif = burun aşağı
         # Yaw: pozitif = sağa dönüş, negatif = sola dönüş
+        # Roll: pozitif = sağa yatma, negatif = sola yatma
         
         # 3D roket yönü hesaplama
         rocket_dir_x = math.sin(yaw_rad) * math.cos(pitch_rad)
@@ -240,10 +241,34 @@ class YerIstasyonu(QWidget):
         reception_layout = QVBoxLayout(reception_tab)
         
         # Seri port girişi
-        self.port_label = QLabel("Veri Alma Seri Portu:")
-        self.port_input = QLineEdit()
-        reception_layout.addWidget(self.port_label)
-        reception_layout.addWidget(self.port_input)
+        rocket_group = QGroupBox("Roket Veri Alma")
+        rocket_layout = QGridLayout(rocket_group)
+        
+        rocket_layout.addWidget(QLabel("Roket COM Port:"), 0, 0)
+        self.rocket_port_combo = QComboBox()
+        self.rocket_refresh_btn = QPushButton("🔄 Portları Yenile")
+        rocket_layout.addWidget(self.rocket_port_combo, 0, 1)
+        rocket_layout.addWidget(self.rocket_refresh_btn, 0, 2)
+        
+        self.rocket_connect_btn = QPushButton("Roket Portuna Bağlan")
+        rocket_layout.addWidget(self.rocket_connect_btn, 1, 0, 1, 3)
+        
+        reception_layout.addWidget(rocket_group)
+        
+        # Payload COM port selection
+        payload_group = QGroupBox("Görev Yükü (Payload) GPS")
+        payload_layout = QGridLayout(payload_group)
+        
+        payload_layout.addWidget(QLabel("Payload COM Port:"), 0, 0)
+        self.payload_port_combo = QComboBox()
+        self.payload_refresh_btn = QPushButton("🔄 Portları Yenile")
+        payload_layout.addWidget(self.payload_port_combo, 0, 1)
+        payload_layout.addWidget(self.payload_refresh_btn, 0, 2)
+        
+        self.payload_connect_btn = QPushButton("Payload Portuna Bağlan")
+        payload_layout.addWidget(self.payload_connect_btn, 1, 0, 1, 3)
+        
+        reception_layout.addWidget(payload_group)
 
         # Metin kutusu
         self.textbox = QTextEdit()
@@ -404,6 +429,11 @@ class YerIstasyonu(QWidget):
         self.running = False
         self.data_buffer = []
         
+        # Payload serial port variables
+        self.payload_serial_port = None
+        self.payload_running = False
+        self.payload_data_buffer = []
+        
         # Transmission variables
         self.tx_serial_port = None
         self.tx_connected = False
@@ -419,13 +449,20 @@ class YerIstasyonu(QWidget):
         self.tx_timer.timeout.connect(self.send_packet)
 
         # Event bağlantıları
-        self.button.clicked.connect(self.connect_serial)
+        self.rocket_connect_btn.clicked.connect(self.connect_rocket_serial)
         self.test_yaw_btn.clicked.connect(lambda: self.test_angle('yaw', 45))
         self.test_pitch_btn.clicked.connect(lambda: self.test_angle('pitch', 30))
         self.test_roll_btn.clicked.connect(lambda: self.test_angle('roll', 60))
         self.reset_btn.clicked.connect(self.reset_angles)
         self.copy_gps_btn.clicked.connect(self.copy_gps_coordinates)
         self.copy_payload_gps_btn.clicked.connect(self.copy_payload_gps_coordinates)
+        
+        # Rocket port event connections
+        self.rocket_refresh_btn.clicked.connect(self.refresh_rocket_ports)
+        
+        # Payload port event connections
+        self.payload_refresh_btn.clicked.connect(self.refresh_payload_ports)
+        self.payload_connect_btn.clicked.connect(self.connect_payload_port)
         
         # Transmission event connections
         self.refresh_ports_btn.clicked.connect(self.refresh_com_ports)
@@ -435,6 +472,8 @@ class YerIstasyonu(QWidget):
         
         # Initialize COM port list
         self.refresh_com_ports()
+        self.refresh_rocket_ports()
+        self.refresh_payload_ports()
 
     def refresh_com_ports(self):
         """Available COM portlarını yenile"""
@@ -442,6 +481,60 @@ class YerIstasyonu(QWidget):
         ports = serial.tools.list_ports.comports()
         for port in ports:
             self.tx_port_combo.addItem(f"{port.device} - {port.description}")
+            
+    def refresh_rocket_ports(self):
+        """Available COM portlarını rocket için yenile"""
+        self.rocket_port_combo.clear()
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            self.rocket_port_combo.addItem(f"{port.device} - {port.description}")
+            
+    def refresh_payload_ports(self):
+        """Available COM portlarını payload için yenile"""
+        self.payload_port_combo.clear()
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            self.payload_port_combo.addItem(f"{port.device} - {port.description}")
+            
+    def connect_payload_port(self):
+        """Payload COM portuna bağlan"""
+        if not self.payload_running:
+            try:
+                selected_port = self.payload_port_combo.currentText().split(' - ')[0]
+                if not selected_port:
+                    self.textbox.append("⚠️ Lütfen payload port seçiniz.")
+                    return
+                    
+                self.payload_serial_port = serial.Serial(selected_port, 115200, timeout=1)
+                self.payload_running = True
+                self.payload_connect_btn.setText("🔌 Payload Bağlantıyı Kes")
+                self.textbox.append(f"✅ Payload {selected_port} portuna bağlanıldı.")
+                threading.Thread(target=self.read_payload_serial, daemon=True).start()
+                
+            except Exception as e:
+                self.textbox.append(f"❌ Payload bağlantı hatası: {e}")
+        else:
+            # Bağlantıyı kes
+            self.payload_running = False
+            if self.payload_serial_port:
+                self.payload_serial_port.close()
+            self.payload_connect_btn.setText("Payload Portuna Bağlan")
+            self.textbox.append("🔌 Payload bağlantısı kesildi.")
+            
+    def read_payload_serial(self):
+        """Payload seri portundan veri oku"""
+        while self.payload_running:
+            try:
+                if self.payload_serial_port and self.payload_serial_port.in_waiting:
+                    line = self.payload_serial_port.readline().decode('utf-8').strip()
+                    if line:
+                        self.payload_data_buffer.append(f"Payload: {line}")
+                        # TODO: Implement payload GPS data format parsing later
+                        # This will parse payload GPS data from the separate UART port
+                        # Format will be implemented based on payload GPS module specifications
+            except Exception as e:
+                self.payload_data_buffer.append(f"Payload okuma hatası: {e}")
+                self.payload_running = False
             
     def connect_tx_port(self):
         """Transmission COM portuna bağlan"""
@@ -620,171 +713,93 @@ class YerIstasyonu(QWidget):
         """Görev Yükü GPS koordinatlarını panoya kopyala"""
         try:
             clipboard = QApplication.clipboard()
-            gps_text = f"{self.latitude:.6f+0.0002},{self.longitude:.6f+0.0003}"
+            gps_text = f"{self.payload_latitude:.6f},{self.payload_longitude:.6f}"
             clipboard.setText(gps_text)
             self.textbox.append(f"📋 Görev Yükü GPS koordinatları kopyalandı: {gps_text}")
         except Exception as e:
             self.textbox.append(f"❌ Görev Yükü kopyalama hatası: {e}")
 
-    def connect_serial(self):
+    def connect_rocket_serial(self):
         if not self.running:
-            port_name = self.port_input.text().strip()
-            if not port_name:
-                self.textbox.append("⚠️ Lütfen seri port giriniz.")
+            selected_port = self.rocket_port_combo.currentText().split(' - ')[0]
+            if not selected_port:
+                self.textbox.append("⚠️ Lütfen rocket port seçiniz.")
                 return
             try:
-                self.serial_port = serial.Serial(port_name, 115200, timeout=1)
+                self.serial_port = serial.Serial(selected_port, 115200, timeout=1)
                 self.running = True
-                self.button.setText("Bağlı ✅")
-                self.button.setEnabled(False)
-                self.textbox.append(f"✅ {port_name} portuna bağlanıldı.")
+                self.rocket_connect_btn.setText("🔌 Rocket Bağlantıyı Kes")
+                self.textbox.append(f"✅ Rocket {selected_port} portuna bağlanıldı.")
                 threading.Thread(target=self.read_serial, daemon=True).start()
             except Exception as e:
-                self.textbox.append(f"❌ Bağlantı hatası: {e}")
+                self.textbox.append(f"❌ Rocket bağlantı hatası: {e}")
         else:
             # Bağlantıyı kes
             self.running = False
             if self.serial_port:
                 self.serial_port.close()
-            self.button.setText("Bağlan")
-            self.button.setEnabled(True)
-            self.textbox.append("🔌 Bağlantı kesildi.")
+            self.rocket_connect_btn.setText("Roket Portuna Bağlan")
+            self.textbox.append("🔌 Rocket bağlantısı kesildi.")
 
     def read_serial(self):
         while self.running:
             try:
                 if self.serial_port and self.serial_port.in_waiting:
-                    line = self.serial_port.readline().decode('utf-8').strip()
-                    if line:
-                        self.data_buffer.append(line)
-                        self.parse_angles(line)
+                    # Read binary data instead of text
+                    data = self.serial_port.read(39)  # Read 39 bytes for complete packet
+                    if len(data) == 39:
+                        self.data_buffer.append(f"Binary packet received: {len(data)} bytes")
+                        self.parse_binary_packet(data)
+                    elif len(data) > 0:
+                        self.data_buffer.append(f"Partial data received: {len(data)} bytes")
             except Exception as e:
                 self.data_buffer.append(f"Hata okuma sırasında: {e}")
                 self.running = False
 
     def parse_angles(self, line):
-        """Gelen veriden açı değerlerini çıkart"""
+        """Legacy function - now handled by binary packet parsing"""
+        # This function is kept for compatibility but binary packets are handled in parse_binary_packet
+        pass
+    
+    def parse_binary_packet(self, data):
+        """Binary packet formatını parse et (39 bytes total)"""
         try:
-            # GPS formatını kontrol et (T: temperature, E: latitude, B: longitude)
-            if line.startswith('T:') and 'E:' in line and 'B:' in line:
-                self.parse_gps_format(line)
+            # Check packet header and footer
+            if data[0] != 0xAA or data[38] != 0xFF:
+                self.data_buffer.append(f"Invalid packet: header=0x{data[0]:02X}, footer=0x{data[38]:02X}")
                 return
             
-            # Virgülle ayrılmış değerleri ayır
-            values = [val.strip() for val in line.split(',')]
+            # Parse float32 values (big-endian format)
+            self.altitude = struct.unpack('>f', data[1:5])[0]  # Bytes 1-4
+            self.latitude = struct.unpack('>f', data[5:9])[0]  # Bytes 5-8
+            self.longitude = struct.unpack('>f', data[9:13])[0]  # Bytes 9-12
             
-            # Debug: veri sayısını kontrol et
-            print(f"Gelen veri: {len(values)} sütun - {values}")
+            # Parse accelerometer data
+            self.accel_x = struct.unpack('>f', data[13:17])[0]  # Bytes 13-16
+            self.accel_y = struct.unpack('>f', data[17:21])[0]  # Bytes 17-20
+            self.accel_z = struct.unpack('>f', data[21:25])[0]  # Bytes 21-24
             
-            # Sütun indeksleri - GPS verilerini doğru sütunlardan al
-            altitude_idx = 0    # İrtifa
-            yaw_idx = 1         # Yaw (sütun 1)
-            pitch_idx = 2       # Pitch (sütun 2)
-            roll_idx = 3        # Roll (sütun 3)
-            latitude_idx = 4    # Enlem (sütun 4) - Ana GPS
-            longitude_idx = 5   # Boylam (sütun 5) - Ana GPS
+            # Parse orientation data
+            self.roll = struct.unpack('>f', data[25:29])[0]  # Bytes 25-28
+            self.pitch = struct.unpack('>f', data[29:33])[0]  # Bytes 29-32
+            self.yaw = struct.unpack('>f', data[33:37])[0]  # Bytes 33-36
             
-            # Extended data indices for accelerometer and gyroscope
-            accel_x_idx = 6     # Accelerometer X (sütun 6)
-            accel_y_idx = 7     # Accelerometer Y (sütun 7)
-            accel_z_idx = 8     # Accelerometer Z (sütun 8)
-            gyro_x_idx = 9      # Gyroscope X (sütun 9)
-            gyro_y_idx = 10     # Gyroscope Y (sütun 10)
-            gyro_z_idx = 11     # Gyroscope Z (sütun 11)
+            # Parse status byte
+            status_byte = data[37]  # Byte 37
             
-            print(f"İndeksler - İrtifa:{altitude_idx}, Yaw:{yaw_idx}, Pitch:{pitch_idx}, Roll:{roll_idx}, Enlem:{latitude_idx}, Boylam:{longitude_idx}")
+            # Update gyroscope data (using orientation derivatives)
+            # This is a simplified approach - in real implementation you'd get actual gyro data
+            self.gyro_x = 0.0  # Will be implemented later
+            self.gyro_y = 0.0
+            self.gyro_z = 0.0
             
-            # İndekslerin geçerli olup olmadığını kontrol et
-            max_idx = max(altitude_idx, yaw_idx, pitch_idx, roll_idx, latitude_idx, longitude_idx)
-            if len(values) > max_idx:
-                
-                # Değerleri ata
-                old_yaw, old_pitch, old_roll = self.yaw, self.pitch, self.roll
-                old_altitude = self.altitude
-                old_latitude, old_longitude = self.latitude, self.longitude
-                
-                self.altitude = float(values[altitude_idx])
-                self.yaw = float(values[yaw_idx])
-                self.pitch = float(values[pitch_idx])
-                self.roll = float(values[roll_idx])
-                
-                # Ana GPS verilerini parse et
-                try:
-                    self.latitude = float(values[latitude_idx])
-                    self.longitude = float(values[longitude_idx])
-                    print(f"Ana GPS verileri alındı: {self.latitude}, {self.longitude}")
-                except (ValueError, IndexError) as gps_error:
-                    print(f"Ana GPS veri parse hatası: {gps_error}")
-                    # GPS verisi yoksa varsayılan değerleri kullan
-                    self.latitude = 0.0
-                    self.longitude = 0.0
-                
-                # Accelerometer and gyroscope data parsing
-                try:
-                    if len(values) > accel_x_idx:
-                        self.accel_x = float(values[accel_x_idx])
-                    if len(values) > accel_y_idx:
-                        self.accel_y = float(values[accel_y_idx])
-                    if len(values) > accel_z_idx:
-                        self.accel_z = float(values[accel_z_idx])
-                    if len(values) > gyro_x_idx:
-                        self.gyro_x = float(values[gyro_x_idx])
-                    if len(values) > gyro_y_idx:
-                        self.gyro_y = float(values[gyro_y_idx])
-                    if len(values) > gyro_z_idx:
-                        self.gyro_z = float(values[gyro_z_idx])
-                    print(f"Sensor verileri alındı - Accel: ({self.accel_x}, {self.accel_y}, {self.accel_z}), Gyro: ({self.gyro_x}, {self.gyro_y}, {self.gyro_z})")
-                except (ValueError, IndexError) as sensor_error:
-                    print(f"Sensor veri parse hatası: {sensor_error}")
-                
-                print(f"Veriler güncellendi:")
-                print(f"  İrtifa: {old_altitude} -> {self.altitude}")
-                print(f"  Açılar: Yaw:{old_yaw}->{self.yaw}, Pitch:{old_pitch}->{self.pitch}, Roll:{old_roll}->{self.roll}")
-                print(f"  Ana GPS: Enlem:{old_latitude}->{self.latitude}, Boylam:{old_longitude}->{self.longitude}")
-            else:
-                print(f"Hata: Veri sayısı ({len(values)}) yetersiz, max indeks: {max_idx}")
-                
-        except (ValueError, IndexError) as e:
-            print(f"Parse hatası: {e}")
-            pass
-    
-    def parse_gps_format(self, line):
-        """GPS formatındaki veriyi parse et (T: temperature, E: latitude, B: longitude) - Görev Yükü GPS"""
-        try:
-            print(f"Görev Yükü GPS formatı parse ediliyor: {line}")
+            self.data_buffer.append(f"Packet parsed: Alt={self.altitude:.1f}m, Lat={self.latitude:.6f}, Lon={self.longitude:.6f}")
+            self.data_buffer.append(f"Orientation: Yaw={self.yaw:.1f}°, Pitch={self.pitch:.1f}°, Roll={self.roll:.1f}°")
+            self.data_buffer.append(f"Accel: X={self.accel_x:.2f}, Y={self.accel_y:.2f}, Z={self.accel_z:.2f}")
+            self.data_buffer.append(f"Status: 0x{status_byte:02X}")
             
-            # T: 25-8-6,E: 39.889188, B: 32.779886 formatını parse et
-            parts = line.split(',')
-            
-            for part in parts:
-                part = part.strip()
-                if part.startswith('E:'):
-                    # Görev Yükü Enlem değerini al
-                    latitude_str = part.replace('E:', '').strip()
-                    self.latitude = float(latitude_str)
-                    print(f"Görev Yükü Enlem alındı: {self.payload_latitude}")
-                    
-                elif part.startswith('B:'):
-                    # Görev Yükü Boylam değerini al
-                    longitude_str = part.replace('B:', '').strip()
-                    self.longitude = float(longitude_str)
-                    print(f"Görev Yükü Boylam alındı: {self.payload_longitude}")
-                    
-                elif part.startswith('T:'):
-                    # Tarih değerini al
-                    temp_str = part.replace('T:', '').strip()
-                    # Tarih formatı: 25-8-6 (gün-ay-yıl)
-                    temp_parts = temp_str.split('-')
-                    if len(temp_parts) >= 3:
-                        day = int(temp_parts[0])
-                        month = int(temp_parts[1])
-                        year = int(temp_parts[2])
-                        print(f"Tarih alındı: {day}/{month}/{year}")
-            
-            print(f"Görev Yükü GPS verileri başarıyla parse edildi: Enlem={self.payload_latitude}, Boylam={self.payload_longitude}")
-            
-        except (ValueError, IndexError) as e:
-            print(f"Görev Yükü GPS format parse hatası: {e}")
+        except Exception as e:
+            self.data_buffer.append(f"Binary packet parse error: {e}")
             pass
 
     def update_rocket_display(self):
@@ -805,6 +820,11 @@ class YerIstasyonu(QWidget):
                 cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor, 10)
                 cursor.removeSelectedText()
         
+        # Payload veri buffer'ından mesajları göster
+        while self.payload_data_buffer:
+            line = self.payload_data_buffer.pop(0)
+            self.textbox.append(line)
+        
         # Açı değerlerini güncelle
         self.angle_label.setText(f"""Açı Değerleri:
 Yaw: {self.yaw:.1f}° 
@@ -823,8 +843,8 @@ Boylam: {self.longitude:.6f}° """)
         
         # Görev Yükü GPS koordinatlarını güncelle
         self.payload_gps_label.setText(f"""Görev Yükü GPS:
-Enlem: {(self.latitude + 0.000123):.6f}° 
-Boylam: {(self.longitude + 0.000321):.6f}° """)
+Enlem: {self.payload_latitude:.6f}° 
+Boylam: {self.payload_longitude:.6f}° """)
         
         # Roket görselini güncelle
         self.update_rocket_display()
