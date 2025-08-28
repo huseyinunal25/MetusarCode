@@ -58,7 +58,7 @@
 #define MPU9250_GYRO_XOUT_H     0x43  // 67
 
 #define ACCEL_SCALE_FACTOR      16384.0f  // ±2g
-#define GYRO_SCALE_FACTOR       131.0f    // ±250 °/s
+#define GYRO_SCALE_FACTOR       30.0f    // ±250 °/s
 #define RAD_TO_DEG              57.2958f
 
 // SUT2 Project defines (activated)
@@ -163,8 +163,11 @@ uint8_t              rx_data = 0;
 uint32_t             gps_data_received_count = 0;
 
 float Temperature, Pressure, altitude;
+float initial_altitude = 0.0f;  // Store the first altitude reading as zero point
+bool altitude_zero_set = false; // Flag to track if zero point has been set
 float gyro_x, gyro_y, gyro_z;
 float accel_x, accel_y, accel_z;
+float raw_altitude;
 
 // SUT2 Project variables (activated)
 TelemetryData_t telemetry_data = {0};
@@ -185,10 +188,12 @@ uint32_t packets_received_count = 0; // Counter for received packets
 uint8_t current_status_byte = 0x00;
 float previous_altitude = 0.0f;
 uint32_t rocket_fired_timestamp = 0;
+uint32_t first_parachute_timestamp = 0;
+uint32_t second_parachute_timestamp = 0;
 uint8_t status_sent = 0; // Flag to track if status was already sent
 
 // Filtering variables for telemetry data
-#define FILTER_SIZE 5
+#define FILTER_SIZE 3
 float altitude_filter[FILTER_SIZE] = {0};
 float accel_z_filter[FILTER_SIZE] = {0};
 float angle_x_filter[FILTER_SIZE] = {0};
@@ -209,7 +214,17 @@ uint8_t sut_rx_data = 0;
 uint8_t sut_rx_buffer_temp[PACKET_SIZE * 4] = {0};
 uint16_t sut_buffer_index = 0;
 
+/////////////MARIO////////////////
 
+int melody[] = {
+    660, 660, 0, 660,    // E E pause E
+    0,  660, 784, 660    // pause E G E
+};
+int noteDurations[] = {
+    150, 150, 150, 150,
+    150, 150, 300, 300
+};
+////////////////////////////////////////7
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -228,7 +243,7 @@ void read_bme280_data(void);
 void read_accelerometer_data(sensor_data_t *accel_data);
 void read_gyroscope_data(sensor_data_t *gyro_data);
 void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation);
-void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon);
+void lora_transmit_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon);
 void check_uart_errors(void);
 void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t len);
 
@@ -250,15 +265,16 @@ void float_to_big_endian_bytes(float value, uint8_t *buf) {
     buf[3] = p[0];
 }
 
-void send_uart1_data_package(float altitude, float pressure,
+void send_sit_data_package(float raw_altitude, float pressure,
                              float acc_x, float acc_y, float acc_z,
                              float ori_x, float ori_y, float ori_z) {
+
     uint8_t packet[36];
     int i = 0;
 
     packet[i++] = 0xAB;
 
-    float_to_big_endian_bytes(altitude,  &packet[i]); i += 4;
+    float_to_big_endian_bytes(raw_altitude,  &packet[i]); i += 4;
     float_to_big_endian_bytes(pressure,  &packet[i]); i += 4;
     float_to_big_endian_bytes(acc_x,     &packet[i]); i += 4;
     float_to_big_endian_bytes(acc_y,     &packet[i]); i += 4;
@@ -282,13 +298,13 @@ void send_uart1_data_package(float altitude, float pressure,
 
 // SUT2 Project function prototypes (activated)
 void ParseTelemetryPacket(uint8_t* packet);
-void PrintTelemetryData(void);
 void ProcessIncomingData(uint8_t new_byte);
 static void MX_TIM2_Init(void);
 void TimerCallback(void);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
 void UpdateStatusFromTelemetry(void);
+void UpdateStatusFromLocalSensors(void);
 void SendStatusMessage(void);
 uint8_t CalculateChecksum(uint8_t* data, uint8_t length);
 void ApplyFiltering(void);
@@ -298,7 +314,7 @@ float GetFilteredValue(float* filter_array);
 void ProcessUART1Command(uint8_t data);
 void CheckUART1Command(void);
 
-
+void playMario();
 
 /**
   * @brief  The application entry point.
@@ -359,8 +375,20 @@ int main(void)
   
   // Initialize UART1 receive interrupt for SUT telemetry (using DMA or separate buffer)
   // We'll use a polling approach for SUT telemetry since UART1 is busy with commands
-  
-  HAL_Delay(200);
+
+  /* Startup GPIO activation - only once at startup */
+  // Activate GPIO0 and GPIO1 for 3 seconds
+ // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+ // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+ // HAL_Delay(3000); // 3 seconds delay
+ // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+ // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+
+  playMario();
+
+
+
+
 
   sensor_data_t accel_data, gyro_data;
   /* USER CODE END 2 */
@@ -380,11 +408,13 @@ int main(void)
     read_gyroscope_data(&gyro_data);
     calculate_orientation(&accel_data, &gyro_data, &orientation);
 
+
+
     /* Adjust Kalman filter parameters based on motion state */
     adjust_kalman_parameters();
 
     /* Transmit via LoRa */
-    transmit_sensor_packet(
+    lora_transmit_packet(
         (int)altitude,
         accel_data.x / ACCEL_SCALE_FACTOR,
         accel_data.y / ACCEL_SCALE_FACTOR,
@@ -401,8 +431,8 @@ int main(void)
 
     // SIT mode - Send UART1 data package (PCB project functionality)
     if (uart1_sending_enabled == 1) {
-        send_uart1_data_package(
-            altitude,
+        send_sit_data_package(
+            raw_altitude,
             Pressure / 100.0f,
             accel_data.x / ACCEL_SCALE_FACTOR,
             accel_data.y / ACCEL_SCALE_FACTOR,
@@ -423,6 +453,15 @@ int main(void)
             UpdateStatusFromTelemetry();
             SendStatusMessage();
         }
+    }
+    
+    else {HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+    }
+
+    // Use local sensors for SUT status logic when no UART1 command or STOP command received
+    if (uart1_sending_enabled == 0) {
+        // Use local sensor data for SUT status logic
+        UpdateStatusFromLocalSensors();
     }
 
     HAL_Delay(MEASUREMENT_DELAY);
@@ -983,7 +1022,17 @@ void initialize_sensors(void)
 void read_bme280_data(void)
 {
     BME280_Measure();
-    altitude = 44330.0f * (1.0f - powf((Pressure / 101325.0f), (1.0f / 5.225f)));
+        raw_altitude = 44330.0f * (1.0f - powf((Pressure / 101325.0f), (1.0f / 5.225f)));
+    
+    // Set the first altitude reading as zero point
+    if (!altitude_zero_set) {
+        initial_altitude = raw_altitude;
+        altitude_zero_set = true;
+        altitude = 0.0f; // First reading becomes zero
+    } else {
+        // Subtract the initial altitude from all subsequent readings
+        altitude = raw_altitude - initial_altitude;
+    }
 }
 
 /* Read accelerometer --------------------------------------------------------*/
@@ -1074,32 +1123,69 @@ void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, 
 }
 
 /* Transmit packet over LoRa (USART3) ----------------------------------------*/
-void transmit_sensor_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon)
+void lora_transmit_packet(int alt, float ax, float ay, float az,
+                          float gx, float gy, float gz,
+                          float lat, float lon)
 {
-    char buf[BUFFER_SIZE];
-    int len;
-    if (!gps.is_valid) {
-        len = sprintf(buf, "%d,%d,%d,%d,0.0000,0.0000,%.2f\n",
-                      alt, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw, gps.altitude);
-    } else {
-        len = sprintf(buf, "%d,%d,%d,%d,%.4f,%.4f,%.2f\n",
-                      alt, (int)orientation.roll, (int)orientation.pitch, (int)orientation.yaw,
-                      lat, lon, gps.altitude);
+    static uint32_t last_tx_time = 0;   // Son gönderim zamanı
+    uint32_t now = HAL_GetTick();
+
+    if (now - last_tx_time < 200) {
+        // 200ms dolmadan çağrı geldiyse gönderme
+        return;
     }
-    uint8_t packet[PACKET_HEADER_SIZE + len];
-    packet[0] = TARGET_ADDR_HIGH;
-    packet[1] = TARGET_ADDR_LOW;
-    packet[2] = CHANNEL;
-    memcpy(&packet[3], buf, len);
-    HAL_UART_Transmit(&huart3, packet, 3 + len, HAL_MAX_DELAY);
-    
-    /* Send additional line break to ensure proper separation */
-    uint8_t line_break[] = "\r\n";
-    HAL_UART_Transmit(&huart3, line_break, 2, HAL_MAX_DELAY);
-    
-    /* Add a small delay to ensure proper line separation */
-    HAL_Delay(10);
+    last_tx_time = now;
+
+    uint8_t packet[39]; // 39 bytes total: 1 header + 36 data + 1 status + 1 footer
+    int i = 0;
+
+    // Byte0: Header (0xAA)
+    packet[i++] = 0xAA;
+
+    // Byte1-4: Altitude (float32)
+    float_to_big_endian_bytes((float)alt, &packet[i]); i += 4;
+
+    // Byte5-8: Latitude
+    float_to_big_endian_bytes(lat, &packet[i]); i += 4;
+
+    // Byte9-12: Longitude
+    float_to_big_endian_bytes(lon, &packet[i]); i += 4;
+
+    // Byte13-16: Accel X
+    float_to_big_endian_bytes(ax, &packet[i]); i += 4;
+
+    // Byte17-20: Accel Y
+    float_to_big_endian_bytes(ay, &packet[i]); i += 4;
+
+    // Byte21-24: Accel Z
+    float_to_big_endian_bytes(az, &packet[i]); i += 4;
+
+    // Byte25-28: Orientation Roll
+    float_to_big_endian_bytes(orientation.roll, &packet[i]); i += 4;
+
+    // Byte29-32: Orientation Pitch
+    float_to_big_endian_bytes(orientation.pitch, &packet[i]); i += 4;
+
+    // Byte33-36: Orientation Yaw
+    float_to_big_endian_bytes(orientation.yaw, &packet[i]); i += 4;
+
+    // Byte37: Status byte
+    packet[i++] = current_status_byte;
+
+    // Byte38: Footer (0xFF)
+    packet[i++] = 0xFF;
+
+    // Add LoRa header (3 bytes)
+    uint8_t lora_packet[42];
+    lora_packet[0] = TARGET_ADDR_HIGH;
+    lora_packet[1] = TARGET_ADDR_LOW;
+    lora_packet[2] = CHANNEL;
+    memcpy(&lora_packet[3], packet, 39);
+
+    // Transmit the complete packet (non-blocking, timeout küçük)
+    HAL_UART_Transmit(&huart3, lora_packet, 42, 50);
 }
+
 
 /* USER CODE END 4 */
 
@@ -1146,15 +1232,6 @@ void ParseTelemetryPacket(uint8_t* packet) {
     // Angle Z (bytes 30-33) - reverse order: 32,31,30,29
     uint8_t angle_z_bytes[4] = {packet[32], packet[31], packet[30], packet[29]};
     memcpy(&telemetry_data.angle_z, angle_z_bytes, 4);
-}
-
-void PrintTelemetryData(void) {
-    char debug_msg[200];
-    sprintf(debug_msg, "Alt:%.2f Pres:%.2f Acc:%.2f,%.2f,%.2f Ang:%.2f,%.2f,%.2f\r\n",
-            telemetry_data.altitude, telemetry_data.pressure,
-            telemetry_data.accel_x, telemetry_data.accel_y, telemetry_data.accel_z,
-            telemetry_data.angle_x, telemetry_data.angle_y, telemetry_data.angle_z);
-    HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), HAL_MAX_DELAY);
 }
 
 void ProcessIncomingData(uint8_t new_byte) {
@@ -1241,39 +1318,132 @@ void UpdateStatusFromTelemetry(void) {
     if ((new_status & STATUS_MIN_ALTITUDE_BIT) &&
         (filtered_angle_x > 50.0f || filtered_angle_y > 50.0f)) {
         new_status |= STATUS_ANGLE_EXCEEDED_BIT;
+
     }
 
     // Check altitude decreasing - FIFTH BIT (Bit 4)
     // Only if angle exceeded bit is active, and once activated stays on
     if ((new_status & STATUS_ANGLE_EXCEEDED_BIT) &&
-        filtered_altitude < previous_altitude) {
-        new_status |= STATUS_ALTITUDE_DECREASING_BIT;
-        // First parachute deployed at the same time as altitude decreasing - SIXTH BIT (Bit 5)
-        new_status |= STATUS_FIRST_PARACHUTE_BIT;
-    }
+        (filtered_altitude < previous_altitude)) {
+
+        // Eğer daha önce FIRST_PARACHUTE_BIT set edilmemişse
+        if (!(new_status & STATUS_FIRST_PARACHUTE_BIT)) {
+
+            // GPIO sadece ilk sefer tetiklenecek
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+
+            new_status |= STATUS_ALTITUDE_DECREASING_BIT;
+            new_status |= STATUS_FIRST_PARACHUTE_BIT;
+            first_parachute_timestamp = current_time;
+        }
+        if(current_time - first_parachute_timestamp > 2000){
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+        }
+
+      }
+
+
 
     // Check altitude <= 550 - SEVENTH BIT (Bit 6)
     if ((new_status & STATUS_FIRST_PARACHUTE_BIT) &&
         filtered_altitude <= 600.0f) {
-        new_status |= STATUS_ALTITUDE_550_BIT;
+
+        // Eğer daha önce FIRST_PARACHUTE_BIT set edilmemişse
+        if (!(new_status & STATUS_ALTITUDE_550_BIT)) {
+
+        	new_status |= STATUS_ALTITUDE_550_BIT;
+			new_status |= STATUS_SECOND_PARACHUTE_BIT;
+            // GPIO sadece ilk sefer tetiklenecek
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
+
+
+        }
     }
-
-    // Check second parachute deployed - EIGHTH BIT (Bit 7)
-    if ((new_status & STATUS_ALTITUDE_550_BIT) &&
-        filtered_altitude <= 550.0f) {  // örnek eşik
-        new_status |= STATUS_SECOND_PARACHUTE_BIT;
-
-        char debug_msg2[200];
-        sprintf(debug_msg2, "Alt:%.2f \r\n", filtered_altitude);
-        HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg2, strlen(debug_msg2), HAL_MAX_DELAY);
-    }
-
-    
     // Update status byte (new bits are added, existing bits are preserved)
     current_status_byte = new_status;
 
     // Store current filtered altitude for next comparison
     previous_altitude = filtered_altitude;
+}
+
+void UpdateStatusFromLocalSensors(void) {
+    uint8_t new_status = current_status_byte; // Start with current status (preserve existing bits)
+    uint32_t current_time = HAL_GetTick();
+
+    // Use local sensor data directly
+    float local_altitude = altitude;  // From BME280 (already zero-referenced)
+    float local_accel_z = accel_z;    // From MPU9250
+    float local_angle_x = orientation.roll;   // From orientation calculation
+    float local_angle_y = orientation.pitch;  // From orientation calculation
+
+    // Check rocket fired (accel z > 25) - FIRST BIT (Bit 0)
+    // Once activated, this bit stays on permanently
+    if (local_accel_z > 25.0f) {
+        new_status |= STATUS_ROCKET_FIRED_BIT;
+        if (!(current_status_byte & STATUS_ROCKET_FIRED_BIT)) {
+            // Rocket just fired, record timestamp
+            rocket_fired_timestamp = current_time;
+        }
+    }
+
+    // Check waited 5 seconds after rocket fired - SECOND BIT (Bit 1)
+    // Only if rocket fired bit is active, and once activated stays on
+    if ((new_status & STATUS_ROCKET_FIRED_BIT) &&
+        (current_time - rocket_fired_timestamp >= 5000)) {
+        new_status |= STATUS_WAITED_5SN_BIT;
+    }
+
+    // Check minimum altitude (>= 1500) - THIRD BIT (Bit 2)
+    // Only if waited 5s bit is active, and once activated stays on
+    if ((new_status & STATUS_WAITED_5SN_BIT) &&
+        local_altitude >= 1500.0f) {
+        new_status |= STATUS_MIN_ALTITUDE_BIT;
+    }
+
+    // Check angle exceeded (x or y > 50) - FOURTH BIT (Bit 3)
+    // Only if minimum altitude bit is active, and once activated stays on
+    if ((new_status & STATUS_MIN_ALTITUDE_BIT) &&
+        (local_angle_x > 50.0f || local_angle_y > 50.0f)) {
+        new_status |= STATUS_ANGLE_EXCEEDED_BIT;
+    }
+
+    // Check altitude decreasing - FIFTH BIT (Bit 4)
+    // Only if angle exceeded bit is active, and once activated stays on
+    if ((new_status & STATUS_ANGLE_EXCEEDED_BIT) &&
+        local_altitude < previous_altitude) {
+        new_status |= STATUS_ALTITUDE_DECREASING_BIT;
+        // First parachute deployed at the same time as altitude decreasing - SIXTH BIT (Bit 5)
+        new_status |= STATUS_FIRST_PARACHUTE_BIT;
+        
+        // Activate GPIO14 for 3 seconds for first parachute
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+        HAL_Delay(3000); // 3 seconds delay
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+    }
+
+    // Check altitude <= 600 - SEVENTH BIT (Bit 6)
+    if ((new_status & STATUS_FIRST_PARACHUTE_BIT) &&
+        local_altitude <= 600.0f) {
+        new_status |= STATUS_ALTITUDE_550_BIT;
+    }
+
+    // Check second parachute deployed - EIGHTH BIT (Bit 7)
+    if ((new_status & STATUS_ALTITUDE_550_BIT) &&
+        local_altitude <= 550.0f) {
+        new_status |= STATUS_SECOND_PARACHUTE_BIT;
+
+        // Activate GPIO15 for 3 seconds for second parachute
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
+        HAL_Delay(3000); // 3 seconds delay
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+
+    }
+
+    // Update status byte (new bits are added, existing bits are preserved)
+    current_status_byte = new_status;
+
+    // Store current altitude for next comparison
+    previous_altitude = local_altitude;
 }
 
 void SendStatusMessage(void) {
@@ -1417,6 +1587,12 @@ void ProcessUART1Command(uint8_t data) {
                 rocket_fired_timestamp = 0;
                 status_sent = 0;
                 
+                // Reset altitude zero point
+                altitude_zero_set = false;
+                initial_altitude = 0.0f;
+                
+
+                
                 // Reset filter arrays
                 for (int j = 0; j < FILTER_SIZE; j++) {
                     altitude_filter[j] = 0.0f;
@@ -1483,6 +1659,12 @@ void CheckUART1Command(void) {
         rocket_fired_timestamp = 0;
         status_sent = 0;
         
+        // Reset altitude zero point
+        altitude_zero_set = false;
+        initial_altitude = 0.0f;
+        
+
+        
         // Reset filter arrays
         for (int i = 0; i < FILTER_SIZE; i++) {
             altitude_filter[i] = 0.0f;
@@ -1504,6 +1686,41 @@ void CheckUART1Command(void) {
     // If no valid command found, reset command buffer
     uart1_cmd_index = 0;
 }
+
+//////////////////////MARIO////////////////////////////////
+
+void playTone(int frequency, int duration) {
+    if (frequency == 0) { // Rest note
+        HAL_Delay(duration);
+        return;
+    }
+
+    int period = 1000000 / frequency;   // period in microseconds
+    int halfPeriod = period / 2;
+
+    int cycles = (duration * 1000) / period;
+    for (int i = 0; i < cycles; i++) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+
+        HAL_Delay(halfPeriod / 1000); // convert us -> ms
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+        HAL_Delay(halfPeriod / 1000);
+
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+    }
+}
+
+void playMario() {
+    for (int i = 0; i < sizeof(melody)/sizeof(int); i++) {
+        playTone(melody[i], noteDurations[i]);
+        HAL_Delay(30); // little gap between notes
+    }
+}
+
+///////////////////////////////////////////////////////////
+
 
 /**
   * @brief  This function is executed in case of error occurrence.
