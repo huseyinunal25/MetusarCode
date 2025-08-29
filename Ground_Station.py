@@ -24,6 +24,8 @@ class RocketWidget(QWidget):
         self.pitch = 0 
         self.roll = 0
         self.altitude = 0
+        self.gpsaltitude = 0.0
+
         
     def set_angles(self, yaw, pitch, roll):
         self.yaw = yaw
@@ -75,9 +77,9 @@ class RocketWidget(QWidget):
         rocket_width = 20
         
         # Açıları radyana çevir
-        yaw_rad = math.radians(self.yaw)
+        roll_rad = math.radians(self.yaw)
         pitch_rad = math.radians(self.pitch)
-        roll_rad = math.radians(self.roll)
+        yaw_rad = math.radians(self.roll)
         
         # Roket vektörünü hesapla (pitch ve yaw'a göre)
         # Başlangıçta roket yukarı bakıyor (0, -1, 0)
@@ -198,12 +200,6 @@ class RocketWidget(QWidget):
         info_text = f"YAW: {self.yaw:6.1f}°    PITCH: {self.pitch:6.1f}°    ROLL: {self.roll:6.1f}°"
         painter.drawText(10, 25, info_text)
         
-        # Yön göstergesi
-        painter.setFont(QFont("Arial", 10))
-        painter.drawText(10, self.height() - 60, "YAW: Sağa/Sola dönüş")
-        painter.drawText(10, self.height() - 45, "PITCH: Yukarı/Aşağı")
-        painter.drawText(10, self.height() - 30, "ROLL: Yan yatma")
-        painter.drawText(10, self.height() - 15, "Sarı nokta: Roket merkezi")
 
 class YerIstasyonu(QWidget):
     def __init__(self):
@@ -216,6 +212,8 @@ class YerIstasyonu(QWidget):
         self.longitude = 0.0  # Boylam
         self.payload_latitude = 0.0  # Görev Yükü Enlem
         self.payload_longitude = 0.0  # Görev Yükü Boylam
+        self.payload_strain = 0.0
+
         
         # Accelerometer and gyroscope data
         self.accel_x = 0.0
@@ -224,6 +222,9 @@ class YerIstasyonu(QWidget):
         self.gyro_x = 0.0
         self.gyro_y = 0.0
         self.gyro_z = 0.0
+        
+        # Status byte
+        self.status_byte = 0x00
 
         # Ana layout
         main_layout = QHBoxLayout()
@@ -270,16 +271,7 @@ class YerIstasyonu(QWidget):
         
         reception_layout.addWidget(payload_group)
 
-        # Metin kutusu
-        self.textbox = QTextEdit()
-        self.textbox.setReadOnly(True)
-        self.textbox.setMaximumHeight(200)
-        reception_layout.addWidget(QLabel("Gelen Veriler:"))
-        reception_layout.addWidget(self.textbox)
 
-        # Bağlan butonu
-        self.button = QPushButton("Bağlan")
-        reception_layout.addWidget(self.button)
 
         # Açı değerleri gösterimi
         self.angle_label = QLabel("Açı Değerleri:\nYaw: 0° \nPitch: 0° \nRoll: 0° ")
@@ -287,9 +279,12 @@ class YerIstasyonu(QWidget):
         reception_layout.addWidget(self.angle_label)
 
         # İrtifa göstergesi
-        self.altitude_label = QLabel("İrtifa:\n0 m ")
-        self.altitude_label.setStyleSheet("background-color: #e8f4fd; padding: 10px; border: 2px solid #2196f3; font-weight: bold; color: black;")
+        self.altitude_label = QLabel("İrtifa:\n0 m\nGPS İrtifa:\n0 m")
+        self.altitude_label.setStyleSheet(
+            "background-color: #e8f4fd; padding: 10px; border: 2px solid #2196f3; font-weight: bold; color: black;"
+        )
         reception_layout.addWidget(self.altitude_label)
+
         
         # GPS koordinatları göstergesi ve kopyalama butonu
         gps_widget = QWidget()
@@ -312,7 +307,7 @@ class YerIstasyonu(QWidget):
         payload_gps_layout = QVBoxLayout(payload_gps_widget)
         payload_gps_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.payload_gps_label = QLabel("Görev Yükü GPS:\nEnlem: 0.000000° \nBoylam: 0.000000° ")
+        self.payload_gps_label = QLabel("Görev Yükü GPS:\nEnlem: 0.000000° \nBoylam: 0.000000° \nStrain: 0.000000")
         self.payload_gps_label.setStyleSheet("background-color: #fff0f0; padding: 10px; border: 2px solid #ff9800; font-weight: bold; color: black;")
         
         self.copy_payload_gps_btn = QPushButton("📋 Görev Yükü GPS Kopyala")
@@ -323,24 +318,7 @@ class YerIstasyonu(QWidget):
         payload_gps_layout.addWidget(self.copy_payload_gps_btn)
         reception_layout.addWidget(payload_gps_widget)
 
-        # Test butonları
-        test_label = QLabel("Test Butonları:")
-        reception_layout.addWidget(test_label)
-        
-        test_layout = QVBoxLayout()
-        self.test_yaw_btn = QPushButton("Test Yaw (45°)")
-        self.test_pitch_btn = QPushButton("Test Pitch (30°)")
-        self.test_roll_btn = QPushButton("Test Roll (60°)")
-        self.reset_btn = QPushButton("Sıfırla")
-        
-        test_layout.addWidget(self.test_yaw_btn)
-        test_layout.addWidget(self.test_pitch_btn)
-        test_layout.addWidget(self.test_roll_btn)
-        test_layout.addWidget(self.reset_btn)
-        
-        test_widget = QWidget()
-        test_widget.setLayout(test_layout)
-        reception_layout.addWidget(test_widget)
+
         
         # Tab 2: Data Transmission (Veri Gönderme)
         transmission_tab = QWidget()
@@ -370,12 +348,7 @@ class YerIstasyonu(QWidget):
         self.team_id_spin.setRange(0, 255)
         self.team_id_spin.setValue(42)  # Default team ID
         packet_layout.addWidget(self.team_id_spin, 0, 1)
-        
-        packet_layout.addWidget(QLabel("Gönderim Aralığı (ms):"), 1, 0)
-        self.tx_interval_spin = QSpinBox()
-        self.tx_interval_spin.setRange(100, 10000)
-        self.tx_interval_spin.setValue(1000)  # Default 1 second
-        packet_layout.addWidget(self.tx_interval_spin, 1, 1)
+    
         
         transmission_layout.addWidget(packet_group)
         
@@ -384,12 +357,10 @@ class YerIstasyonu(QWidget):
         tx_control_layout = QVBoxLayout(tx_control_group)
         
         self.auto_tx_btn = QPushButton("🔄 Otomatik Gönderimi Başlat")
-        self.manual_tx_btn = QPushButton("📤 Manuel Gönder")
         self.tx_status_label = QLabel("Durum: Hazır")
         self.tx_status_label.setStyleSheet("color: green; font-weight: bold;")
         
         tx_control_layout.addWidget(self.auto_tx_btn)
-        tx_control_layout.addWidget(self.manual_tx_btn)
         tx_control_layout.addWidget(self.tx_status_label)
         
         transmission_layout.addWidget(tx_control_group)
@@ -429,6 +400,19 @@ class YerIstasyonu(QWidget):
         self.running = False
         self.data_buffer = []
         
+        # Ring buffer for packet synchronization
+        self.ring_buffer = bytearray(1024)  # 1KB ring buffer
+        self.ring_buffer_head = 0
+        self.ring_buffer_tail = 0
+        self.ring_buffer_size = 0
+        
+        # Payload ring buffer
+        self.payload_ring_buffer = bytearray(1024)
+        self.payload_ring_head = 0
+        self.payload_ring_tail = 0
+        self.payload_ring_size = 0
+
+
         # Payload serial port variables
         self.payload_serial_port = None
         self.payload_running = False
@@ -450,10 +434,6 @@ class YerIstasyonu(QWidget):
 
         # Event bağlantıları
         self.rocket_connect_btn.clicked.connect(self.connect_rocket_serial)
-        self.test_yaw_btn.clicked.connect(lambda: self.test_angle('yaw', 45))
-        self.test_pitch_btn.clicked.connect(lambda: self.test_angle('pitch', 30))
-        self.test_roll_btn.clicked.connect(lambda: self.test_angle('roll', 60))
-        self.reset_btn.clicked.connect(self.reset_angles)
         self.copy_gps_btn.clicked.connect(self.copy_gps_coordinates)
         self.copy_payload_gps_btn.clicked.connect(self.copy_payload_gps_coordinates)
         
@@ -468,7 +448,6 @@ class YerIstasyonu(QWidget):
         self.refresh_ports_btn.clicked.connect(self.refresh_com_ports)
         self.tx_connect_btn.clicked.connect(self.connect_tx_port)
         self.auto_tx_btn.clicked.connect(self.toggle_auto_transmission)
-        self.manual_tx_btn.clicked.connect(self.send_packet)
         
         # Initialize COM port list
         self.refresh_com_ports()
@@ -502,39 +481,35 @@ class YerIstasyonu(QWidget):
             try:
                 selected_port = self.payload_port_combo.currentText().split(' - ')[0]
                 if not selected_port:
-                    self.textbox.append("⚠️ Lütfen payload port seçiniz.")
                     return
                     
                 self.payload_serial_port = serial.Serial(selected_port, 115200, timeout=1)
                 self.payload_running = True
                 self.payload_connect_btn.setText("🔌 Payload Bağlantıyı Kes")
-                self.textbox.append(f"✅ Payload {selected_port} portuna bağlanıldı.")
                 threading.Thread(target=self.read_payload_serial, daemon=True).start()
                 
             except Exception as e:
-                self.textbox.append(f"❌ Payload bağlantı hatası: {e}")
+                pass
         else:
             # Bağlantıyı kes
             self.payload_running = False
             if self.payload_serial_port:
                 self.payload_serial_port.close()
             self.payload_connect_btn.setText("Payload Portuna Bağlan")
-            self.textbox.append("🔌 Payload bağlantısı kesildi.")
             
     def read_payload_serial(self):
-        """Payload seri portundan veri oku"""
+        """Payload seri portundan veri oku (ring buffer ile)"""
         while self.payload_running:
             try:
                 if self.payload_serial_port and self.payload_serial_port.in_waiting:
-                    line = self.payload_serial_port.readline().decode('utf-8').strip()
-                    if line:
-                        self.payload_data_buffer.append(f"Payload: {line}")
-                        # TODO: Implement payload GPS data format parsing later
-                        # This will parse payload GPS data from the separate UART port
-                        # Format will be implemented based on payload GPS module specifications
+                    data = self.payload_serial_port.read(self.payload_serial_port.in_waiting)
+                    if data:
+                        self.add_to_payload_ring_buffer(data)
+                        self.process_payload_ring_buffer_packets()
             except Exception as e:
                 self.payload_data_buffer.append(f"Payload okuma hatası: {e}")
                 self.payload_running = False
+
             
     def connect_tx_port(self):
         """Transmission COM portuna bağlan"""
@@ -579,7 +554,7 @@ class YerIstasyonu(QWidget):
         if not self.auto_tx_running:
             self.auto_tx_running = True
             self.auto_tx_btn.setText("⏹️ Otomatik Gönderimi Durdur")
-            interval = self.tx_interval_spin.value()
+            interval = 200 
             self.tx_timer.start(interval)
             self.tx_status_label.setText(f"Durum: Otomatik gönderim aktif ({interval}ms)")
             self.tx_status_label.setStyleSheet("color: blue; font-weight: bold;")
@@ -614,7 +589,7 @@ class YerIstasyonu(QWidget):
             
             # Altitudes (Bytes 7-14) - Using barometric altitude as current altitude
             packet.extend(struct.pack('<f', float(self.altitude)))  # Rocket barometric altitude (Bytes 7-10)
-            packet.extend(struct.pack('<f', 0.0))  # Rocket GPS altitude (Bytes 11-14) - not available
+            packet.extend(struct.pack('<f', float(self.gpsaltitude)))  # Rocket GPS altitude (Bytes 11-14) 
             
             # Rocket GPS coordinates (Bytes 15-22)
             packet.extend(struct.pack('<f', float(self.latitude)))   # Rocket latitude (Bytes 15-18)
@@ -682,22 +657,7 @@ class YerIstasyonu(QWidget):
             self.tx_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.packet_info_text.append(f"❌ Paket gönderim hatası: {e}")
 
-    def test_angle(self, angle_type, value):
-        """Test için açı değerlerini ayarla"""
-        if angle_type == 'yaw':
-            self.yaw = value
-        elif angle_type == 'pitch':
-            self.pitch = value
-        elif angle_type == 'roll':
-            self.roll = value
-        self.update_rocket_display()
 
-    def reset_angles(self):
-        """Tüm açıları sıfırla"""
-        self.yaw = 0
-        self.pitch = 0
-        self.roll = 0
-        self.update_rocket_display()
 
     def copy_gps_coordinates(self):
         """GPS koordinatlarını panoya kopyala"""
@@ -705,9 +665,8 @@ class YerIstasyonu(QWidget):
             clipboard = QApplication.clipboard()
             gps_text = f"{self.latitude:.6f},{self.longitude:.6f}"
             clipboard.setText(gps_text)
-            self.textbox.append(f"📋 GPS koordinatları kopyalandı: {gps_text}")
         except Exception as e:
-            self.textbox.append(f"❌ Kopyalama hatası: {e}")
+            pass
 
     def copy_payload_gps_coordinates(self):
         """Görev Yükü GPS koordinatlarını panoya kopyala"""
@@ -715,46 +674,105 @@ class YerIstasyonu(QWidget):
             clipboard = QApplication.clipboard()
             gps_text = f"{self.payload_latitude:.6f},{self.payload_longitude:.6f}"
             clipboard.setText(gps_text)
-            self.textbox.append(f"📋 Görev Yükü GPS koordinatları kopyalandı: {gps_text}")
         except Exception as e:
-            self.textbox.append(f"❌ Görev Yükü kopyalama hatası: {e}")
+            pass
 
     def connect_rocket_serial(self):
         if not self.running:
             selected_port = self.rocket_port_combo.currentText().split(' - ')[0]
             if not selected_port:
-                self.textbox.append("⚠️ Lütfen rocket port seçiniz.")
                 return
             try:
                 self.serial_port = serial.Serial(selected_port, 115200, timeout=1)
                 self.running = True
                 self.rocket_connect_btn.setText("🔌 Rocket Bağlantıyı Kes")
-                self.textbox.append(f"✅ Rocket {selected_port} portuna bağlanıldı.")
                 threading.Thread(target=self.read_serial, daemon=True).start()
             except Exception as e:
-                self.textbox.append(f"❌ Rocket bağlantı hatası: {e}")
+                pass
         else:
             # Bağlantıyı kes
             self.running = False
             if self.serial_port:
                 self.serial_port.close()
             self.rocket_connect_btn.setText("Roket Portuna Bağlan")
-            self.textbox.append("🔌 Rocket bağlantısı kesildi.")
 
     def read_serial(self):
+        """Read serial data using ring buffer for packet synchronization"""
         while self.running:
             try:
                 if self.serial_port and self.serial_port.in_waiting:
-                    # Read binary data instead of text
-                    data = self.serial_port.read(39)  # Read 39 bytes for complete packet
-                    if len(data) == 39:
-                        self.data_buffer.append(f"Binary packet received: {len(data)} bytes")
-                        self.parse_binary_packet(data)
-                    elif len(data) > 0:
-                        self.data_buffer.append(f"Partial data received: {len(data)} bytes")
+                    # Read available data
+                    data = self.serial_port.read(self.serial_port.in_waiting)
+                    if data:
+                        # Add data to ring buffer
+                        self.add_to_ring_buffer(data)
+                        # Process complete packets from ring buffer
+                        self.process_ring_buffer_packets()
             except Exception as e:
                 self.data_buffer.append(f"Hata okuma sırasında: {e}")
                 self.running = False
+                
+    def add_to_ring_buffer(self, data):
+        """Add incoming data to ring buffer"""
+        for byte in data:
+            # Add byte to ring buffer
+            self.ring_buffer[self.ring_buffer_head] = byte
+            self.ring_buffer_head = (self.ring_buffer_head + 1) % len(self.ring_buffer)
+            
+            # Update buffer size
+            if self.ring_buffer_size < len(self.ring_buffer):
+                self.ring_buffer_size += 1
+            else:
+                # Buffer is full, move tail
+                self.ring_buffer_tail = (self.ring_buffer_tail + 1) % len(self.ring_buffer)
+                
+    def process_ring_buffer_packets(self):
+        """Process complete packets from ring buffer"""
+        PACKET_SIZE = 43
+        HEADER = 0xAA
+        FOOTER = 0xFF
+        
+        while self.ring_buffer_size >= PACKET_SIZE:
+            # Search for packet header
+            header_found = False
+            search_start = self.ring_buffer_tail
+            
+            for i in range(self.ring_buffer_size - PACKET_SIZE + 1):
+                current_pos = (search_start + i) % len(self.ring_buffer)
+                
+                if self.ring_buffer[current_pos] == HEADER:
+                    # Check if we have enough data for a complete packet
+                    if self.ring_buffer_size >= i + PACKET_SIZE:
+                        # Check footer
+                        footer_pos = (current_pos + PACKET_SIZE - 1) % len(self.ring_buffer)
+                        if self.ring_buffer[footer_pos] == FOOTER:
+                            # Extract complete packet
+                            packet = bytearray(PACKET_SIZE)
+                            for j in range(PACKET_SIZE):
+                                packet[j] = self.ring_buffer[(current_pos + j) % len(self.ring_buffer)]
+                            
+                            # Parse the packet
+                            self.parse_binary_packet(packet)
+                            
+                            # Remove processed data from buffer
+                            self.remove_from_ring_buffer(i + PACKET_SIZE)
+                            header_found = True
+                            break
+                    else:
+                        # Not enough data for complete packet
+                        break
+                        
+            if not header_found:
+                # No valid packet found, remove one byte and continue
+                self.remove_from_ring_buffer(1)
+                
+    def remove_from_ring_buffer(self, count):
+        """Remove specified number of bytes from ring buffer"""
+        if count > self.ring_buffer_size:
+            count = self.ring_buffer_size
+            
+        self.ring_buffer_tail = (self.ring_buffer_tail + count) % len(self.ring_buffer)
+        self.ring_buffer_size -= count
 
     def parse_angles(self, line):
         """Legacy function - now handled by binary packet parsing"""
@@ -764,10 +782,8 @@ class YerIstasyonu(QWidget):
     def parse_binary_packet(self, data):
         """Binary packet formatını parse et (39 bytes total)"""
         try:
-            # Check packet header and footer
-            if data[0] != 0xAA or data[38] != 0xFF:
-                self.data_buffer.append(f"Invalid packet: header=0x{data[0]:02X}, footer=0x{data[38]:02X}")
-                return
+            # Packet header and footer already validated by ring buffer
+            # data[0] should be 0xAA and data[38] should be 0xFF
             
             # Parse float32 values (big-endian format)
             self.altitude = struct.unpack('>f', data[1:5])[0]  # Bytes 1-4
@@ -783,9 +799,11 @@ class YerIstasyonu(QWidget):
             self.roll = struct.unpack('>f', data[25:29])[0]  # Bytes 25-28
             self.pitch = struct.unpack('>f', data[29:33])[0]  # Bytes 29-32
             self.yaw = struct.unpack('>f', data[33:37])[0]  # Bytes 33-36
+
+            self.gpsaltitude = struct.unpack('>f', data[37:41])[0]  # Bytes 37-40
             
             # Parse status byte
-            status_byte = data[37]  # Byte 37
+            self.status_byte = data[41]  # Byte 41
             
             # Update gyroscope data (using orientation derivatives)
             # This is a simplified approach - in real implementation you'd get actual gyro data
@@ -802,28 +820,82 @@ class YerIstasyonu(QWidget):
             self.data_buffer.append(f"Binary packet parse error: {e}")
             pass
 
+    def add_to_payload_ring_buffer(self, data):
+        for byte in data:
+            self.payload_ring_buffer[self.payload_ring_head] = byte
+            self.payload_ring_head = (self.payload_ring_head + 1) % len(self.payload_ring_buffer)
+
+            if self.payload_ring_size < len(self.payload_ring_buffer):
+                self.payload_ring_size += 1
+            else:
+                self.payload_ring_tail = (self.payload_ring_tail + 1) % len(self.payload_ring_buffer)
+
+    def process_payload_ring_buffer_packets(self):
+        PACKET_SIZE = 18
+        HEADER = 0xAA
+        FOOTER = 0xFF
+
+        while self.payload_ring_size >= PACKET_SIZE:
+            header_found = False
+            search_start = self.payload_ring_tail
+
+            for i in range(self.payload_ring_size - PACKET_SIZE + 1):
+                current_pos = (search_start + i) % len(self.payload_ring_buffer)
+
+                if self.payload_ring_buffer[current_pos] == HEADER:
+                    if self.payload_ring_size >= i + PACKET_SIZE:
+                        footer_pos = (current_pos + PACKET_SIZE - 1) % len(self.payload_ring_buffer)
+                        if self.payload_ring_buffer[footer_pos] == FOOTER:
+                            packet = bytearray(PACKET_SIZE)
+                            for j in range(PACKET_SIZE):
+                                packet[j] = self.payload_ring_buffer[(current_pos + j) % len(self.payload_ring_buffer)]
+                            
+                            self.parse_payload_packet(packet)
+                            self.remove_from_payload_ring_buffer(i + PACKET_SIZE)
+                            header_found = True
+                            break
+                    else:
+                        break
+
+            if not header_found:
+                self.remove_from_payload_ring_buffer(1)
+    def parse_payload_packet(self, data):
+        try:
+            # data[0] = 0xAA, data[17] = 0xFF
+
+            self.payload_latitude = struct.unpack('>f', data[1:5])[0]   # Bytes 1-4
+            self.payload_longitude = struct.unpack('>f', data[5:9])[0]  # Bytes 5-8
+            self.payload_altitude = struct.unpack('>f', data[9:13])[0]  # Bytes 9-12
+            self.payload_strain = struct.unpack('>f', data[13:17])[0]  # Bytes 13-16
+
+            self.payload_data_buffer.append(
+                f"Payload parsed: Lat={self.payload_latitude:.6f}, Lon={self.payload_longitude:.6f}, Alt={self.payload_altitude:.1f}m"
+            )
+
+        except Exception as e:
+            self.payload_data_buffer.append(f"Payload parse error: {e}")
+
+
+    def remove_from_payload_ring_buffer(self, count):
+        if count > self.payload_ring_size:
+            count = self.payload_ring_size
+        self.payload_ring_tail = (self.payload_ring_tail + count) % len(self.payload_ring_buffer)
+        self.payload_ring_size -= count
+
+
     def update_rocket_display(self):
         """Roket görselini güncelle"""
         self.rocket_widget.set_angles(self.yaw, self.pitch, self.roll)
 
     def update_gui(self):
         """GUI'yi güncelle"""
-        # Veri buffer'ından mesajları göster
+        # Clear data buffers (no longer displaying in textbox)
         while self.data_buffer:
-            line = self.data_buffer.pop(0)
-            self.textbox.append(line)
-            
-            # Textbox'ı temiz tut (son 50 satır)
-            if self.textbox.document().lineCount() > 50:
-                cursor = self.textbox.textCursor()
-                cursor.movePosition(cursor.MoveOperation.Start)
-                cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor, 10)
-                cursor.removeSelectedText()
+            self.data_buffer.pop(0)
         
-        # Payload veri buffer'ından mesajları göster
+        # Clear payload data buffers (no longer displaying in textbox)
         while self.payload_data_buffer:
-            line = self.payload_data_buffer.pop(0)
-            self.textbox.append(line)
+            self.payload_data_buffer.pop(0)
         
         # Açı değerlerini güncelle
         self.angle_label.setText(f"""Açı Değerleri:
@@ -831,10 +903,11 @@ Yaw: {self.yaw:.1f}°
 Pitch: {self.pitch:.1f}° 
 Roll: {self.roll:.1f}° 
 Accel: X={self.accel_x:.2f} Y={self.accel_y:.2f} Z={self.accel_z:.2f}
-Gyro: X={self.gyro_x:.2f} Y={self.gyro_y:.2f} Z={self.gyro_z:.2f}""")
+Status: 0x{self.status_byte:02X}""")
         
         # İrtifa değerini güncelle
-        self.altitude_label.setText(f"İrtifa:\n{self.altitude:.1f} m ")
+        self.altitude_label.setText(f"İrtifa:\n{self.altitude:.1f} m\nGPS İrtifa:\n{self.gpsaltitude:.1f} m")
+
         
         # GPS koordinatlarını güncelle
         self.gps_label.setText(f"""GPS Koordinatları:
@@ -844,7 +917,10 @@ Boylam: {self.longitude:.6f}° """)
         # Görev Yükü GPS koordinatlarını güncelle
         self.payload_gps_label.setText(f"""Görev Yükü GPS:
 Enlem: {self.payload_latitude:.6f}° 
-Boylam: {self.payload_longitude:.6f}° """)
+Boylam: {self.payload_longitude:.6f}° 
+İrtifa: {self.payload_altitude:.1f} m
+Strain: {self.payload_strain:.2f}""")
+
         
         # Roket görselini güncelle
         self.update_rocket_display()
