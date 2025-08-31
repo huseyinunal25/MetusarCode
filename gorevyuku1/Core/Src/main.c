@@ -74,9 +74,6 @@ int weight_flag = 0;
 
 int32_t hxData_array[50];
 int HX_period = 0;
-int temp_HX_period;
-int32_t  samples;
-int first_cycle = 0;
 
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,10 +85,12 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM2_Init(void);
 
+void float_to_big_endian_bytes(float value, uint8_t *buf);
+void lora_transmit_packet(float alt, float lat, float lon, float strain);
+
 //void call_weigh(void);
 void initialize_sensors(void);
 void read_bme280_data(void);
-void transmit_sensor_packet(int alt, float lat, float lon, int wei);
 void print_gps_debug_info(void);
 void check_uart_errors(void);
 void microDelay(uint16_t delay)
@@ -128,10 +127,10 @@ int32_t getHX711(void)
 }
 
 
-int weigh(int32_t weight_total, int32_t samples)
+int weigh(int32_t weight_total)
 {
 
-  //int32_t  samples = 50;
+  int32_t  samples = 50;
   int milligram;
   float coefficient;
 
@@ -141,7 +140,7 @@ int weigh(int32_t weight_total, int32_t samples)
   return milligram;
 }
 
-/*void data_HX(void){
+void data_HX(void){
 	if (HX_period < 50){
 	weight_total += getHX711();
 	HX_period += 1;
@@ -151,7 +150,7 @@ int weigh(int32_t weight_total, int32_t samples)
 		HX_period = 0;
 		weight_total = 0;
 	}
-}*/
+}
 
 /* UART MSP Initialization (GPIO + NVIC) -------------------------------------*/
 
@@ -189,9 +188,6 @@ void print_gps_debug_info(void)
         gps.latitude, gps.longitude,
         gps_data_received_count
     );
-#if 0
-    HAL_UART_Transmit(&huart1, (uint8_t*)dbg, len, HAL_MAX_DELAY);
-#endif
 }
 
 /* Recover from UART errors on GPS ------------------------------------------*/
@@ -256,12 +252,11 @@ int main(void)
         /* BME280 */
         read_bme280_data();
 
-        //data_HX();
-        call_weigh();
+        data_HX();
+        /*call_weigh();*/
 
-        /* Transmit via LoRa */
-        transmit_sensor_packet(
-            (int)altitude,
+        lora_transmit_packet(
+        	gps.altitude,
             gps.latitude,
             gps.longitude,
 			weight
@@ -271,9 +266,6 @@ int main(void)
         // Add this call to send the binary data package over UART1
 
         if (++debug_counter >= 50) {
-#if 0
-            print_gps_debug_info();
-#endif
             check_uart_errors();
 
             /* Debug BME280 data */
@@ -290,48 +282,19 @@ int main(void)
     }
 }
 
-void call_weigh(void){
+/*void call_weigh(void){
 	uint32_t current_time = HAL_GetTick();
 
 	if (weight_flag == 0){
 		weight_time = current_time;
 		weight_flag = 1;
 	}
-
-	else if (weight_flag == 1 && (current_time - weight_time <= 500)){
-		hxData_array[HX_period] = getHX711();
-		HX_period += 1;
-	}
-
-	else if (weight_flag == 1 && (current_time - weight_time > 500)){
-
-		if (first_cycle == 0) {
-			for (int i = 0; i < HX_period + 1; i++) {
-				weight_total += hxData_array[i];
-			}
-			first_cycle = 1;
-		}
-
-		else if (first_cycle == 1) {
-			for (int i = 0; i < HX_period + 1; i++) {
-				weight_total += hxData_array[i];
-			}
-
-			for (int j = 0; j < temp_HX_period + 1; j++) {
-				hxData_array[j] = hxData_array[j+1];
-			}
-
-			HX_period -= temp_HX_period;
-		}
-
-		temp_HX_period = HX_period;
-		samples = (int32_t)HX_period;
-		weight = weigh(weight_total, samples);
-		weight_total = 0;
+	else if (weight_flag == 1 && (current_time - weight_time > 2000)){
+		weight = weigh();
 		weight_flag = 0;
 	}
 
-}
+}*/
 
 /* Initialize BME280 ---------------------------------------------------------*/
 void initialize_sensors(void)
@@ -345,33 +308,60 @@ void read_bme280_data(void)
     BME280_Measure();
     altitude = 44330.0f * (1.0f - powf((Pressure / 101325.0f), (1.0f / 5.225f)));
 }
-/* Transmit packet over LoRa (USART3) ----------------------------------------*/
-void transmit_sensor_packet(int alt, float lat, float lon, int wei)
+
+//////////////////////////////TRANSFER//////////////////////////////
+
+void lora_transmit_packet(float alt, float lat, float lon, float strain)
 {
-    char buf[BUFFER_SIZE];
-    int len;
-    if (!gps.is_valid) {
-        len = sprintf(buf, "%d,0.0000,0.0000,%.2f,G %d\n",
-                      alt, gps.altitude,wei);
-    } else {
-        len = sprintf(buf, "%d,%.4f,%.4f,%.2f,G %d\n",
-                      alt, lat, lon, gps.altitude, wei);
+    static uint32_t last_tx_time = 0;   // Son gönderim zamanı
+    uint32_t now = HAL_GetTick();
+
+    if (now - last_tx_time < 200) {
+        // 200ms dolmadan çağrı geldiyse gönderme
+        return;
     }
-    uint8_t packet[PACKET_HEADER_SIZE + len];
-    packet[0] = TARGET_ADDR_HIGH;
-    packet[1] = TARGET_ADDR_LOW;
-    packet[2] = CHANNEL;
-    memcpy(&packet[3], buf, len);
-    HAL_UART_Transmit(&huart3, packet, 3 + len, HAL_MAX_DELAY);
+    last_tx_time = now;
 
-    /* Send additional line break to ensure proper separation */
-    uint8_t line_break[] = "\r\n";
-    HAL_UART_Transmit(&huart3, line_break, 2, HAL_MAX_DELAY);
+    uint8_t packet[18]; // 43 bytes total: 1 header + 40 data + 1 status + 1 footer
+    int i = 0;
 
-    /* Add a small delay to ensure proper line separation */
-    HAL_Delay(10);
+    // Byte0: Header (0xAA)
+    packet[i++] = 0xAA;
+
+    // Byte1-4: Altitude (float32)
+    float_to_big_endian_bytes(lat, &packet[i]); i += 4;
+
+    // Byte5-8: Latitude
+    float_to_big_endian_bytes(lon, &packet[i]); i += 4;
+
+    // Byte9-12: Longitude
+    float_to_big_endian_bytes(alt, &packet[i]); i += 4;
+
+    // Byte13-16: Accel X
+    float_to_big_endian_bytes(strain, &packet[i]); i += 4;
+
+    // Byte38: Footer (0xFF)
+    packet[i++] = 0xFF;
+
+    // Add LoRa header (3 bytes)
+    uint8_t lora_packet[21];
+    lora_packet[0] = TARGET_ADDR_HIGH;
+    lora_packet[1] = TARGET_ADDR_LOW;
+    lora_packet[2] = CHANNEL;
+    memcpy(&lora_packet[3], packet, 18);
+
+    // Transmit the complete packet (non-blocking, timeout küçük)
+    HAL_UART_Transmit(&huart3, lora_packet, 21, 50);
 }
 
+void float_to_big_endian_bytes(float value, uint8_t *buf) {
+    uint8_t *p = (uint8_t*)&value;
+    buf[0] = p[3];
+    buf[1] = p[2];
+    buf[2] = p[1];
+    buf[3] = p[0];
+}
+////////////////////////////////////////////////////////////////////
 
 /* System Clock Configuration ------------------------------------------------*/
 void SystemClock_Config(void)
