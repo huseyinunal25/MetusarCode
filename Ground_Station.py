@@ -205,11 +205,14 @@ class YerIstasyonu(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Yer İstasyonu - 3D Roket Görselleştirme ve Veri İletimi")
-        self.resize(1400, 800)
+        self.resize(1400, 700)
 
         self.altitude = 0
         self.latitude = 0.0  # Enlem
         self.longitude = 0.0  # Boylam
+        self.gpsaltitude = 0.0
+
+        self.payload_altitude = 0.0
         self.payload_latitude = 0.0  # Görev Yükü Enlem
         self.payload_longitude = 0.0  # Görev Yükü Boylam
         self.payload_strain = 0.0
@@ -222,6 +225,8 @@ class YerIstasyonu(QWidget):
         self.gyro_x = 0.0
         self.gyro_y = 0.0
         self.gyro_z = 0.0
+
+        self.angle_z = 0.0
         
         # Status byte
         self.status_byte = 0x00
@@ -231,7 +236,7 @@ class YerIstasyonu(QWidget):
 
         # Sol panel (kontrol paneli) - Tab widget ile organize edildi
         left_widget = QWidget()
-        left_widget.setMaximumWidth(400)
+        left_widget.setMaximumWidth(600)
         left_panel = QVBoxLayout(left_widget)
         
         # Tab widget oluştur
@@ -276,14 +281,18 @@ class YerIstasyonu(QWidget):
         # Açı değerleri gösterimi
         self.angle_label = QLabel("Açı Değerleri:\nYaw: 0° \nPitch: 0° \nRoll: 0° ")
         self.angle_label.setStyleSheet("background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc; color: black;")
-        reception_layout.addWidget(self.angle_label)
 
         # İrtifa göstergesi
         self.altitude_label = QLabel("İrtifa:\n0 m\nGPS İrtifa:\n0 m")
         self.altitude_label.setStyleSheet(
             "background-color: #e8f4fd; padding: 10px; border: 2px solid #2196f3; font-weight: bold; color: black;"
         )
-        reception_layout.addWidget(self.altitude_label)
+
+        # Açı + İrtifa yan yana
+        angle_alt_layout = QHBoxLayout()
+        angle_alt_layout.addWidget(self.angle_label)
+        angle_alt_layout.addWidget(self.altitude_label)
+        reception_layout.addLayout(angle_alt_layout)
 
         
         # GPS koordinatları göstergesi ve kopyalama butonu
@@ -300,7 +309,6 @@ class YerIstasyonu(QWidget):
         
         gps_layout.addWidget(self.gps_label)
         gps_layout.addWidget(self.copy_gps_btn)
-        reception_layout.addWidget(gps_widget)
 
         # Görev Yükü GPS koordinatları göstergesi
         payload_gps_widget = QWidget()
@@ -316,8 +324,11 @@ class YerIstasyonu(QWidget):
         
         payload_gps_layout.addWidget(self.payload_gps_label)
         payload_gps_layout.addWidget(self.copy_payload_gps_btn)
-        reception_layout.addWidget(payload_gps_widget)
 
+        gps_pair_layout = QHBoxLayout()
+        gps_pair_layout.addWidget(gps_widget)
+        gps_pair_layout.addWidget(payload_gps_widget)
+        reception_layout.addLayout(gps_pair_layout)
 
         
         # Tab 2: Data Transmission (Veri Gönderme)
@@ -453,6 +464,15 @@ class YerIstasyonu(QWidget):
         self.refresh_com_ports()
         self.refresh_rocket_ports()
         self.refresh_payload_ports()
+
+    def calculate_z_angle_from_accel(self, ax, ay, az):
+        mag = math.sqrt(ax*ax + ay*ay + az*az)
+        if mag < 1e-6:
+            return 0.0
+        dot = az / mag
+        dot = max(-1.0, min(1.0, dot))  # clamp
+        return math.degrees(math.acos(dot))
+
 
     def refresh_com_ports(self):
         """Available COM portlarını yenile"""
@@ -596,7 +616,7 @@ class YerIstasyonu(QWidget):
             packet.extend(struct.pack('<f', float(self.longitude)))  # Rocket longitude (Bytes 19-22)
             
             # Payload GPS coordinates (Bytes 23-30)
-            packet.extend(struct.pack('<f', 0.0))  # Payload GPS altitude (Bytes 23-26) - not available
+            packet.extend(struct.pack('<f', float(self.payload_altitude)))  # Payload GPS altitude (Bytes 23-26) - not available
             packet.extend(struct.pack('<f', float(self.payload_latitude)))  # Payload latitude (Bytes 27-30)
             packet.extend(struct.pack('<f', float(self.payload_longitude)))  # Payload longitude (Bytes 31-34)
             
@@ -611,15 +631,15 @@ class YerIstasyonu(QWidget):
             packet.extend(struct.pack('<f', float(self.gyro_z)))  # Gyro Z (Bytes 55-58)
             
             # Accelerometer data (Bytes 59-70)
-            packet.extend(struct.pack('<f', 0.0))  # Accel X (Bytes 59-62)
+            packet.extend(struct.pack('<f', float(self.accel_x)))  # Accel X (Bytes 59-62)
             packet.extend(struct.pack('<f', float(self.accel_y)))  # Accel Y (Bytes 63-66)
             packet.extend(struct.pack('<f', float(self.accel_z)))  # Accel Z (Bytes 67-70)
             
             # Orientation angles (Bytes 71-74) - using yaw as main orientation
-            packet.extend(struct.pack('<f', float(self.yaw)))  # Orientation angle (Bytes 71-74)
+            packet.extend(struct.pack('<f', float(self.angle_z)))  # Orientation angle (Bytes 71-74)
             
             # Status byte (Byte 75) - default status
-            packet.append(0x01)  # Status byte
+            packet.append(self.map_status_byte(self.status_byte))
             
             # Calculate CRC for all data except CRC byte itself
             checksum = self.calculate_checksum(packet)
@@ -631,6 +651,8 @@ class YerIstasyonu(QWidget):
             # Paketi gönder
             self.tx_serial_port.write(packet)
             self.packet_counter += 1
+
+            
             
             # Gönderilen veri bilgisini göster
             packet_info = f"📤 Paket #{self.packet_counter} gönderildi ({len(packet)} bytes)\n"
@@ -657,7 +679,8 @@ class YerIstasyonu(QWidget):
             self.tx_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.packet_info_text.append(f"❌ Paket gönderim hatası: {e}")
 
-
+        if self.packet_counter == 255:
+            self.packet_counter = 0
 
     def copy_gps_coordinates(self):
         """GPS koordinatlarını panoya kopyala"""
@@ -804,6 +827,10 @@ class YerIstasyonu(QWidget):
             
             # Parse status byte
             self.status_byte = data[41]  # Byte 41
+
+            self.angle_z = self.calculate_z_angle_from_accel(
+                self.accel_x, self.accel_y, self.accel_z
+                )
             
             # Update gyroscope data (using orientation derivatives)
             # This is a simplified approach - in real implementation you'd get actual gyro data
@@ -819,6 +846,20 @@ class YerIstasyonu(QWidget):
         except Exception as e:
             self.data_buffer.append(f"Binary packet parse error: {e}")
             pass
+
+    def map_status_byte(self, status):
+        mapping = {
+            0b10000000: 1,
+            0b11000000: 1,
+            0b11100000: 1,
+            0b11110000: 1,
+            0b11111000: 1,
+            0b11111100: 2,
+            0b11111110: 2,
+            0b11111111: 4,
+        }
+        return mapping.get(status, 3)
+
 
     def add_to_payload_ring_buffer(self, data):
         for byte in data:
@@ -902,6 +943,7 @@ class YerIstasyonu(QWidget):
 Yaw: {self.yaw:.1f}° 
 Pitch: {self.pitch:.1f}° 
 Roll: {self.roll:.1f}° 
+Z-Açı : {self.angle_z:.1f}° 
 Accel: X={self.accel_x:.2f} Y={self.accel_y:.2f} Z={self.accel_z:.2f}
 Status: 0x{self.status_byte:02X}""")
         

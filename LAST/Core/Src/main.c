@@ -58,8 +58,12 @@
 #define MPU9250_GYRO_XOUT_H     0x43  // 67
 
 #define ACCEL_SCALE_FACTOR      16384.0f  // ±2g
+#define ACCEL_SCALE_M_S2	    1670.7f
 #define GYRO_SCALE_FACTOR       30.0f    // ±250 °/s
 #define RAD_TO_DEG              57.2958f
+
+#define DEG2RAD (3.14159265358979323846f/180.0f)
+#define RAD2DEG (180.0f/3.14159265358979323846f)
 
 // SUT2 Project defines (activated)
 #define TELEMETRY_HEADER 0xAB
@@ -113,7 +117,7 @@ typedef struct {
 } sensor_data_t;
 
 typedef struct {
-    float roll, pitch, yaw;
+    float roll, pitch, yaw, angle_z ;
 } orientation_t;
 
 /* Kalman Filter structure for each angle */
@@ -243,7 +247,7 @@ void read_bme280_data(void);
 void read_accelerometer_data(sensor_data_t *accel_data);
 void read_gyroscope_data(sensor_data_t *gyro_data);
 void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, orientation_t *orientation);
-void lora_transmit_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon);
+void lora_transmit_packet(int alt, float ax, float ay, float az, float gx, float gy, float gz, float lat, float lon, float gpsalt);
 void check_uart_errors(void);
 void mpu9250_read_data(uint8_t reg, uint8_t *data, uint8_t len);
 
@@ -254,6 +258,9 @@ void initialize_kalman_filters(void);
 void adjust_kalman_parameters(void);
 bool is_device_stationary(void);
 void set_kalman_responsiveness(bool high_responsiveness);
+
+static float clampf(float v, float lo, float hi);
+float calculate_z_angle(float roll_deg, float pitch_deg);
 /**
  * @brief Send a 32-byte binary data package over UART1: altitude, pressure, accel x/y/z, orientation x/y/z (all float, 4 bytes each)
  */
@@ -423,7 +430,8 @@ int main(void)
         gyro_data.y / GYRO_SCALE_FACTOR,
         gyro_data.z / GYRO_SCALE_FACTOR,
         gps.latitude,
-        gps.longitude
+        gps.longitude,
+		gps.altitude
     );
 
     // Check for commands and process them
@@ -434,9 +442,9 @@ int main(void)
         send_sit_data_package(
             raw_altitude,
             Pressure / 100.0f,
-            accel_data.x / ACCEL_SCALE_FACTOR,
-            accel_data.y / ACCEL_SCALE_FACTOR,
-            accel_data.z / ACCEL_SCALE_FACTOR,
+            accel_data.x / ACCEL_SCALE_M_S2,
+            accel_data.y / ACCEL_SCALE_M_S2,
+            accel_data.z / ACCEL_SCALE_M_S2,
             orientation.roll,
             orientation.pitch,
             orientation.yaw
@@ -1120,12 +1128,30 @@ void calculate_orientation(sensor_data_t *accel_data, sensor_data_t *gyro_data, 
     // Apply angle limits to prevent unrealistic values
     o->roll = fmaxf(-90.0f, fminf(90.0f, o->roll));
     o->pitch = fmaxf(-90.0f, fminf(90.0f, o->pitch));
+    o->angle_z = calculate_z_angle(o->roll, o->pitch);
 }
 
+/////////////////////////////////////////////////
+
+static float clampf(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+float calculate_z_angle(float roll_deg, float pitch_deg) {
+    float roll_rad  = roll_deg  * DEG2RAD;
+    float pitch_rad = pitch_deg * DEG2RAD;
+    float cosval = cosf(roll_rad) * cosf(pitch_rad);
+    cosval = clampf(cosval, -1.0f, 1.0f);
+    return acosf(cosval) * RAD2DEG;
+}
+
+/////////////////////////////////////////////////
 /* Transmit packet over LoRa (USART3) ----------------------------------------*/
 void lora_transmit_packet(int alt, float ax, float ay, float az,
                           float gx, float gy, float gz,
-                          float lat, float lon)
+                          float lat, float lon, float gpsalt)
 {
     static uint32_t last_tx_time = 0;   // Son gönderim zamanı
     uint32_t now = HAL_GetTick();
@@ -1136,7 +1162,7 @@ void lora_transmit_packet(int alt, float ax, float ay, float az,
     }
     last_tx_time = now;
 
-    uint8_t packet[39]; // 39 bytes total: 1 header + 36 data + 1 status + 1 footer
+    uint8_t packet[43]; // 43 bytes total: 1 header + 40 data + 1 status + 1 footer
     int i = 0;
 
     // Byte0: Header (0xAA)
@@ -1169,6 +1195,8 @@ void lora_transmit_packet(int alt, float ax, float ay, float az,
     // Byte33-36: Orientation Yaw
     float_to_big_endian_bytes(orientation.yaw, &packet[i]); i += 4;
 
+    float_to_big_endian_bytes(gpsalt, &packet[i]); i += 4;
+
     // Byte37: Status byte
     packet[i++] = current_status_byte;
 
@@ -1176,14 +1204,14 @@ void lora_transmit_packet(int alt, float ax, float ay, float az,
     packet[i++] = 0xFF;
 
     // Add LoRa header (3 bytes)
-    uint8_t lora_packet[42];
+    uint8_t lora_packet[46];
     lora_packet[0] = TARGET_ADDR_HIGH;
     lora_packet[1] = TARGET_ADDR_LOW;
     lora_packet[2] = CHANNEL;
-    memcpy(&lora_packet[3], packet, 39);
+    memcpy(&lora_packet[3], packet, 43);
 
     // Transmit the complete packet (non-blocking, timeout küçük)
-    HAL_UART_Transmit(&huart3, lora_packet, 42, 50);
+    HAL_UART_Transmit(&huart3, lora_packet, 46, 50);
 }
 
 
@@ -1378,7 +1406,7 @@ void UpdateStatusFromLocalSensors(void) {
 
     // Check rocket fired (accel z > 25) - FIRST BIT (Bit 0)
     // Once activated, this bit stays on permanently
-    if (local_accel_z > 25.0f) {
+    if (local_accel_z > 2.5f) {
         new_status |= STATUS_ROCKET_FIRED_BIT;
         if (!(current_status_byte & STATUS_ROCKET_FIRED_BIT)) {
             // Rocket just fired, record timestamp
@@ -1403,40 +1431,47 @@ void UpdateStatusFromLocalSensors(void) {
     // Check angle exceeded (x or y > 50) - FOURTH BIT (Bit 3)
     // Only if minimum altitude bit is active, and once activated stays on
     if ((new_status & STATUS_MIN_ALTITUDE_BIT) &&
-        (local_angle_x > 50.0f || local_angle_y > 50.0f)) {
+        (fabsf(local_angle_x) + fabsf(local_angle_y) > 50.0f)) {
         new_status |= STATUS_ANGLE_EXCEEDED_BIT;
     }
 
+
     // Check altitude decreasing - FIFTH BIT (Bit 4)
     // Only if angle exceeded bit is active, and once activated stays on
-    if ((new_status & STATUS_ANGLE_EXCEEDED_BIT) &&
-        local_altitude < previous_altitude) {
-        new_status |= STATUS_ALTITUDE_DECREASING_BIT;
-        // First parachute deployed at the same time as altitude decreasing - SIXTH BIT (Bit 5)
-        new_status |= STATUS_FIRST_PARACHUTE_BIT;
-        
-        // Activate GPIO14 for 3 seconds for first parachute
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-        HAL_Delay(3000); // 3 seconds delay
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-    }
 
-    // Check altitude <= 600 - SEVENTH BIT (Bit 6)
+    if ((new_status & STATUS_ANGLE_EXCEEDED_BIT) &&
+        (local_altitude < previous_altitude)) {
+
+        // Eğer daha önce FIRST_PARACHUTE_BIT set edilmemişse
+        if (!(new_status & STATUS_FIRST_PARACHUTE_BIT)) {
+
+            // GPIO sadece ilk sefer tetiklenecek
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+
+            new_status |= STATUS_ALTITUDE_DECREASING_BIT;
+            new_status |= STATUS_FIRST_PARACHUTE_BIT;
+            first_parachute_timestamp = current_time;
+        }
+        if(current_time - first_parachute_timestamp > 2000){
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+        }
+
+      }
+
+
     if ((new_status & STATUS_FIRST_PARACHUTE_BIT) &&
         local_altitude <= 600.0f) {
-        new_status |= STATUS_ALTITUDE_550_BIT;
-    }
 
-    // Check second parachute deployed - EIGHTH BIT (Bit 7)
-    if ((new_status & STATUS_ALTITUDE_550_BIT) &&
-        local_altitude <= 550.0f) {
-        new_status |= STATUS_SECOND_PARACHUTE_BIT;
+        // Eğer daha önce FIRST_PARACHUTE_BIT set edilmemişse
+        if (!(new_status & STATUS_ALTITUDE_550_BIT)) {
 
-        // Activate GPIO15 for 3 seconds for second parachute
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
-        HAL_Delay(3000); // 3 seconds delay
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+        	new_status |= STATUS_ALTITUDE_550_BIT;
+			new_status |= STATUS_SECOND_PARACHUTE_BIT;
+            // GPIO sadece ilk sefer tetiklenecek
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
 
+
+        }
     }
 
     // Update status byte (new bits are added, existing bits are preserved)
