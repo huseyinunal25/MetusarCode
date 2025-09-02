@@ -877,7 +877,7 @@ class YerIstasyonu(QWidget):
                 self.payload_ring_tail = (self.payload_ring_tail + 1) % len(self.payload_ring_buffer)
 
     def process_payload_ring_buffer_packets(self):
-        PACKET_SIZE = 35
+        PACKET_SIZE = 34
         HEADER = 0xAA
         FOOTER = 0xFF
 
@@ -973,7 +973,7 @@ Enlem: {self.latitude:.6f}°
 Boylam: {self.longitude:.6f}° """)
         
         # Görev Yükü GPS koordinatlarını güncelle
-        self.payload_gps_label.setText(f"""Görev Yükü GPS:
+        self.payload_gps_label.setText(f"""Görev Yükü:
 Enlem: {self.payload_latitude:.6f}° 
 Boylam: {self.payload_longitude:.6f}° 
 İrtifa: {self.payload_altitude:.1f} m
