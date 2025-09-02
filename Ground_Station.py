@@ -216,6 +216,10 @@ class YerIstasyonu(QWidget):
         self.payload_latitude = 0.0  # Görev Yükü Enlem
         self.payload_longitude = 0.0  # Görev Yükü Boylam
         self.payload_strain = 0.0
+        self.payload_bmealtitude = 0.0
+        self.payload_pressure = 0.0
+        self.payload_humidity = 0.0
+        self.payload_temperature = 0.0
 
         
         # Accelerometer and gyroscope data
@@ -849,6 +853,7 @@ class YerIstasyonu(QWidget):
 
     def map_status_byte(self, status):
         mapping = {
+            0b00000000: 1,
             0b10000000: 1,
             0b11000000: 1,
             0b11100000: 1,
@@ -872,7 +877,7 @@ class YerIstasyonu(QWidget):
                 self.payload_ring_tail = (self.payload_ring_tail + 1) % len(self.payload_ring_buffer)
 
     def process_payload_ring_buffer_packets(self):
-        PACKET_SIZE = 18
+        PACKET_SIZE = 35
         HEADER = 0xAA
         FOOTER = 0xFF
 
@@ -902,12 +907,23 @@ class YerIstasyonu(QWidget):
                 self.remove_from_payload_ring_buffer(1)
     def parse_payload_packet(self, data):
         try:
-            # data[0] = 0xAA, data[17] = 0xFF
+            # data[0] = 0xAA, data[33] = 0xFF
 
             self.payload_latitude = struct.unpack('>f', data[1:5])[0]   # Bytes 1-4
+
             self.payload_longitude = struct.unpack('>f', data[5:9])[0]  # Bytes 5-8
+
             self.payload_altitude = struct.unpack('>f', data[9:13])[0]  # Bytes 9-12
+            
             self.payload_strain = struct.unpack('>f', data[13:17])[0]  # Bytes 13-16
+
+            self.payload_bmealtitude = struct.unpack('>f', data[17:21])[0]  # Bytes 17-20
+
+            self.payload_temperature = struct.unpack('>f', data[21:25])[0]  # Bytes 21-24
+
+            self.payload_pressure = struct.unpack('>f', data[25:29])[0]  # Bytes 25-28
+
+            self.payload_humidity = struct.unpack('>f', data[29:33])[0]  # Bytes 29-32
 
             self.payload_data_buffer.append(
                 f"Payload parsed: Lat={self.payload_latitude:.6f}, Lon={self.payload_longitude:.6f}, Alt={self.payload_altitude:.1f}m"
@@ -961,7 +977,12 @@ Boylam: {self.longitude:.6f}° """)
 Enlem: {self.payload_latitude:.6f}° 
 Boylam: {self.payload_longitude:.6f}° 
 İrtifa: {self.payload_altitude:.1f} m
-Strain: {self.payload_strain:.2f}""")
+Strain: {self.payload_strain:.2f}
+İrtifa Basınç: {self.payload_bmealtitude:.2f}
+Basınç: {self.payload_pressure:.2f}
+Sıcaklık: {self.payload_temperature:.2f}
+Nem: {self.payload_humidity:.2f}""")
+    
 
         
         # Roket görselini güncelle
