@@ -13,6 +13,19 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygon, QFont, QClipboard
 from PySide6.QtCore import QPoint
 import serial.tools.list_ports
+from openpyxl.workbook import Workbook
+from openpyxl import load_workbook
+from openpyxl.chart import (
+    ScatterChart,
+    Reference,
+    Series,
+)
+
+import numpy as np
+
+gorev_wb = load_workbook('C:/Users/kerem/Documents/GitHub/MetusarCode/gorev_yuku.xlsx')
+gorev_ws_yedek = gorev_wb['gorev_data_yedek']
+gorev_ws = gorev_wb['gorev_data']
 
 class RocketWidget(QWidget):
     def __init__(self):
@@ -207,6 +220,23 @@ class YerIstasyonu(QWidget):
         self.setWindowTitle("Yer İstasyonu - 3D Roket Görselleştirme ve Veri İletimi")
         self.resize(1400, 700)
 
+        # Data kayıt
+        self.data_row = 2
+        self.start_time = time.time()
+
+        # Konum Hesabı
+        g = 9.81                    # yerçekimi ivmesi
+        c = 0.9*0.88*math.pi*0.5**2/2    # Cd*yoğunluk*pi*Alan^2/2
+        m = 4.4                     # görev yükü + paraşüt kütlesi
+        self.v_lim = math.sqrt(m*g/c)
+        t_lim = math.sqrt(m/g/c)*math.atanh(math.sqrt(c/g/m)*self.v_lim*0.99)
+        self.y_lim = math.sqrt(m/c/g)*math.log(math.cosh(math.sqrt(g*c/m)*t_lim)) 
+        #self.t_dusus = (3000 - y_lim) / v_lim    # 3000 yerine y_max yazılacak
+        self.data_long = []
+        self.data_lat = []
+        self.my_altitude = 0
+        self.data_t = []
+
         self.altitude = 0
         self.latitude = 0.0  # Enlem
         self.longitude = 0.0  # Boylam
@@ -390,10 +420,25 @@ class YerIstasyonu(QWidget):
         packet_info_layout.addWidget(self.packet_info_text)
         
         transmission_layout.addWidget(packet_info_group)
+
+        # Tab 3: Excell'e veri yazdırma
+        excell_tab = QWidget()
+        excell_layout = QVBoxLayout(excell_tab)
+
+        self.excell_sifirla_btn = QPushButton("Excell Verisini Sıfırla")
+        self.excell_sifirla_btn.clicked.connect(self.excell_tab_button)
+
+        self.excell_grafik_btn = QPushButton("Excell Grafiğini Çizdir")
+        self.excell_grafik_btn.clicked.connect(self.excell_grafik)
+
+
+        excell_layout.addWidget(self.excell_sifirla_btn)
+        excell_layout.addWidget(self.excell_grafik_btn)
         
         # Add tabs to tab widget
         self.tab_widget.addTab(reception_tab, "📥 Veri Alma")
         self.tab_widget.addTab(transmission_tab, "📤 Veri Gönderme")
+        self.tab_widget.addTab(excell_tab, "Datasheet'i Temizle")
         
         left_panel.addWidget(self.tab_widget)
 
@@ -520,6 +565,7 @@ class YerIstasyonu(QWidget):
             if self.payload_serial_port:
                 self.payload_serial_port.close()
             self.payload_connect_btn.setText("Payload Portuna Bağlan")
+        
             
     def read_payload_serial(self):
         """Payload seri portundan veri oku (ring buffer ile)"""
@@ -939,12 +985,87 @@ class YerIstasyonu(QWidget):
         self.payload_ring_tail = (self.payload_ring_tail + count) % len(self.payload_ring_buffer)
         self.payload_ring_size -= count
 
+    def data_store(self):
+        gorev_ws.cell(row = self.data_row, column = 1).value = self.payload_strain
+        gorev_ws.cell(row = self.data_row, column = 2).value = self.payload_pressure
+        gorev_ws.cell(row = self.data_row, column = 3).value = self.payload_temperature
+        gorev_ws.cell(row = self.data_row, column = 5).value = self.elapsed_time
+        gorev_wb.save('C:/Users/kerem/Documents/GitHub/MetusarCode/gorev_yuku.xlsx')
+        self.data_row += 1
+        print(self.elapsed_time)
+    
+    def excell_tab_button(self):
+        for ws in gorev_wb.worksheets[2:]:
+            gorev_wb.remove(ws)
+
+        gorev_ws = gorev_wb.copy_worksheet(gorev_ws_yedek)
+        gorev_ws.title = "gorev_data"
+        gorev_wb.save('C:/Users/kerem/Documents/GitHub/MetusarCode/gorev_yuku.xlsx')
+    
+    def excell_grafik(self):
+        chart = ScatterChart()
+        chart.title = "Payload Veri-Zaman Grafiği"
+        chart.style = 13  # Grafik stili
+        chart.y_axis.title = 'Veriler'
+        chart.x_axis.title = 'Zaman'
+
+        # Veri seçimi
+        xvalues = Reference(gorev_ws, min_col=5, min_row=2, max_row=self.data_row)
+        for i in range(1, 5):
+            values = Reference(gorev_ws, min_col=i, min_row=1, max_row=self.data_row)
+            series = Series(values, xvalues, title_from_data=True)
+            chart.series.append(series)
+
+        gorev_ws.add_chart(chart, "G5")
+        gorev_wb.save('C:/Users/kerem/Documents/GitHub/MetusarCode/gorev_yuku.xlsx')
+
+    def konumgy(self):
+
+        self.data_lat = np.array(self.data_lat)
+        self.data_long = np.array(self.data_long)
+        self.data_t = np.array(self.data_t)
+
+        n = len(self.data_lat)
+        a1 = (n*sum(self.data_t*self.data_lat) - sum(self.data_t)*sum(self.data_lat)) / (n*sum(self.data_t*self.data_t) - sum(self.data_t)**2) 
+        b1 = sum(self.data_lat)/n - a1*sum(self.data_t)/n
+
+        a2 = (n*sum(self.data_t*self.data_long) - sum(self.data_t)*sum(self.data_long)) / (n*sum(self.data_t*self.data_t) - sum(self.data_t)**2)
+        b2 = sum(self.data_long)/n - a1*sum(self.data_t)/n
+
+        lat_coor = a1*self.t_dusus + b1
+        long_coor = a2*self.t_dusus + b2
+        return [float(lat_coor), float(long_coor)]
+    
+    def hava_yogunlugu(self):
+
+        RH = self.payload_humidity
+        T_C = self.payload_temperature
+        p_Pa = self.payload_pressure
+
+        T_K = T_C + 273.15
+        # Doygun buhar basıncı (Pa)
+        e_s = 6.112 * math.exp((17.62 * T_C) / (243.12 + T_C)) * 100  # hPa -> Pa
+        
+        # Su buharı basıncı (Pa)
+        e = RH / 100 * e_s
+        
+        # Kuru hava basıncı (Pa)
+        p_d = p_Pa - e
+        
+        R_d = 287.05  # J/kg.K
+        R_v = 461.495 # J/kg.K
+        
+        # Yoğunluk (kg/m³)
+        rho = (p_d / (R_d * T_K)) + (e / (R_v * T_K))
+    
+        return rho
 
     def update_rocket_display(self):
         """Roket görselini güncelle"""
         self.rocket_widget.set_angles(self.yaw, self.pitch, self.roll)
 
     def update_gui(self):
+        self.elapsed_time = time.time() - self.start_time
         """GUI'yi güncelle"""
         # Clear data buffers (no longer displaying in textbox)
         while self.data_buffer:
@@ -982,9 +1103,19 @@ Strain: {self.payload_strain:.2f}
 Basınç: {self.payload_pressure:.2f}
 Sıcaklık: {self.payload_temperature:.2f}
 Nem: {self.payload_humidity:.2f}""")
-    
 
-        
+        if self.payload_altitude > 2000:
+            if self.my_altitude < self.payload_altitude:
+                self.my_altitude = self.payload_altitude
+            
+            else:
+                self.data_long.append(self.payload_longitude)
+                self.data_lat.append(self.payload_latitude)
+                self.t_dusus = (self.my_altitude - self.y_lim) / self.v_lim
+                self.data_t.append(self.elapsed_time)
+
+        if self.payload_running:
+            self.data_store()
         # Roket görselini güncelle
         self.update_rocket_display()
 

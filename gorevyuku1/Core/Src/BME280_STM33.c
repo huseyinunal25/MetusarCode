@@ -27,7 +27,7 @@ extern I2C_HandleTypeDef hi2c1;
 
 #define BME280_ADDRESS 0xEC  // SDIO is grounded, the 7 bit address is 0x76 and 8 bit address = 0x76<<1 = 0xEC
 
-extern float Temperature, Pressure;
+extern float Temperature, Pressure, Humidity;
 
 uint8_t chipID;
 
@@ -114,6 +114,17 @@ int BME280_Config (uint8_t osrs_t, uint8_t osrs_p, uint8_t osrs_h, uint8_t mode,
 
 
 	// write the humidity oversampling to 0xF2
+	datatowrite = osrs_h;
+	if (HAL_I2C_Mem_Write(BME280_I2C, BME280_ADDRESS, CTRL_HUM_REG, 1, &datatowrite, 1, 1000) != HAL_OK)
+	{
+		return -1;
+	}
+	HAL_Delay (100);
+	HAL_I2C_Mem_Read(BME280_I2C, BME280_ADDRESS, CTRL_HUM_REG, 1, &datacheck, 1, 1000);
+	if (datacheck != datatowrite)
+	{
+		return -1;
+	}
 
 
 
@@ -165,7 +176,7 @@ int BMEReadRaw(void)
 		 */
 		pRaw = (RawData[0]<<12)|(RawData[1]<<4)|(RawData[2]>>4);
 		tRaw = (RawData[3]<<12)|(RawData[4]<<4)|(RawData[5]>>4);
-
+		hRaw = (RawData[6]<<8)|(RawData[7]);
 
 		return 0;
 	}
@@ -311,7 +322,11 @@ void BME280_Measure (void)
 
 #endif
 		  }
-
+		if (hRaw == 0x8000) Humidity = 0; // value in case temp measurement was disabled
+		else
+		{
+		  Humidity = (bme280_compensate_H_int32 (hRaw))/1024.0;  // as per datasheet, the temp is x1024
+		}
 
 	}
 
@@ -319,6 +334,6 @@ void BME280_Measure (void)
 	// if the device is detached
 	else
 	{
-		Temperature = Pressure = 0;
+		Temperature = Pressure = Humidity = 0;
 	}
 }

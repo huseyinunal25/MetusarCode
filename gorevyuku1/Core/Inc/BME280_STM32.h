@@ -94,6 +94,7 @@ void BME280_Measure (void);
 // REGISTERS DEFINITIONS
 #define ID_REG      	0xD0
 #define RESET_REG  		0xE0
+#define CTRL_HUM_REG    0xF2
 #define STATUS_REG      0xF3
 #define CTRL_MEAS_REG   0xF4
 #define CONFIG_REG      0xF5

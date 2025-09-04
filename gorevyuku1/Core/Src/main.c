@@ -43,6 +43,11 @@
 #define DT_PORT GPIOB
 #define SCK_PIN GPIO_PIN_13
 #define SCK_PORT GPIOB
+
+//Buzzer pin
+#define buz_pin GPIO_PIN_1
+#define buz_port GPIOA
+
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef    hi2c1;
 UART_HandleTypeDef   huart1;    /* Debug */
@@ -57,11 +62,10 @@ uint8_t              rx_index = 0;
 uint8_t              rx_data = 0;
 uint32_t             gps_data_received_count = 0;
 
-float Temperature, Pressure, altitude;
-float gyro_x, gyro_y, gyro_z;
-float accel_x, accel_y, accel_z;
+float Temperature, Pressure, Humidity, altitude;
 
-uint32_t tare = -55734;
+
+uint32_t tare = -4000000;
 float knownOriginal = 500000;  // in milli gram
 float knownHX711 = 211170;
 int weight;
@@ -74,7 +78,9 @@ int weight_flag = 0;
 
 int32_t hxData_array[50];
 int HX_period = 0;
-
+int temp_HX_period;
+int32_t  samples;
+int first_cycle = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -86,9 +92,9 @@ static void MX_USART3_UART_Init(void);
 static void MX_TIM2_Init(void);
 
 void float_to_big_endian_bytes(float value, uint8_t *buf);
-void lora_transmit_packet(float alt, float lat, float lon, float strain);
+void lora_transmit_packet(float alt, float lat, float lon, float strain, float altitude, float Temperature,float Pressure, float Humidity );
 
-//void call_weigh(void);
+void call_weigh(void);
 void initialize_sensors(void);
 void read_bme280_data(void);
 void print_gps_debug_info(void);
@@ -127,10 +133,9 @@ int32_t getHX711(void)
 }
 
 
-int weigh(int32_t weight_total)
+int weigh(int32_t weight_total, int32_t samples)
 {
 
-  int32_t  samples = 50;
   int milligram;
   float coefficient;
 
@@ -140,17 +145,6 @@ int weigh(int32_t weight_total)
   return milligram;
 }
 
-void data_HX(void){
-	if (HX_period < 50){
-	weight_total += getHX711();
-	HX_period += 1;
-	}
-	else if (HX_period == 50) {
-		weight = weigh(weight_total);
-		HX_period = 0;
-		weight_total = 0;
-	}
-}
 
 /* UART MSP Initialization (GPIO + NVIC) -------------------------------------*/
 
@@ -246,20 +240,30 @@ int main(void)
 	HAL_GPIO_WritePin(SCK_PORT, SCK_PIN, GPIO_PIN_RESET);
     HAL_Delay(10);
 
-
+	HAL_GPIO_WritePin(buz_port, buz_pin, GPIO_PIN_SET);
+	HAL_Delay(1000);
+	HAL_GPIO_WritePin(buz_port, buz_pin, GPIO_PIN_RESET);
+	HAL_Delay(200);
+	HAL_GPIO_WritePin(buz_port, buz_pin, GPIO_PIN_SET);
+	HAL_Delay(1000);
+	HAL_GPIO_WritePin(buz_port, buz_pin, GPIO_PIN_RESET);
+	HAL_Delay(200);
 
     while (1) {
         /* BME280 */
         read_bme280_data();
 
-        data_HX();
-        /*call_weigh();*/
+        call_weigh();
 
         lora_transmit_packet(
         	gps.altitude,
             gps.latitude,
             gps.longitude,
-			weight
+			weight,
+			altitude,
+			Temperature,
+			Pressure,
+			Humidity
         );
 
 
@@ -282,19 +286,48 @@ int main(void)
     }
 }
 
-/*void call_weigh(void){
+void call_weigh(void){
 	uint32_t current_time = HAL_GetTick();
 
 	if (weight_flag == 0){
 		weight_time = current_time;
 		weight_flag = 1;
 	}
-	else if (weight_flag == 1 && (current_time - weight_time > 2000)){
-		weight = weigh();
+
+	else if (weight_flag == 1 && (current_time - weight_time <= 500)){
+		hxData_array[HX_period] = getHX711();
+		HX_period += 1;
+	}
+
+	else if (weight_flag == 1 && (current_time - weight_time > 500)){
+
+		if (first_cycle == 0) {
+			for (int i = 0; i < HX_period + 1; i++) {
+				weight_total += hxData_array[i];
+			}
+			first_cycle = 1;
+		}
+
+		else if (first_cycle == 1) {
+			for (int i = 0; i < HX_period + 1; i++) {
+				weight_total += hxData_array[i];
+			}
+
+			for (int j = 0; j < temp_HX_period + 1; j++) {
+				hxData_array[j] = hxData_array[j+1];
+			}
+
+			HX_period -= temp_HX_period;
+		}
+
+		temp_HX_period = HX_period;
+		samples = (int32_t)HX_period;
+		weight = weigh(weight_total, samples);
+		weight_total = 0;
 		weight_flag = 0;
 	}
 
-}*/
+}
 
 /* Initialize BME280 ---------------------------------------------------------*/
 void initialize_sensors(void)
@@ -311,7 +344,7 @@ void read_bme280_data(void)
 
 //////////////////////////////TRANSFER//////////////////////////////
 
-void lora_transmit_packet(float alt, float lat, float lon, float strain)
+void lora_transmit_packet(float alt, float lat, float lon, float strain, float altitude, float Temperature, float Pressure,float Humidity )
 {
     static uint32_t last_tx_time = 0;   // Son gönderim zamanı
     uint32_t now = HAL_GetTick();
@@ -322,7 +355,7 @@ void lora_transmit_packet(float alt, float lat, float lon, float strain)
     }
     last_tx_time = now;
 
-    uint8_t packet[18]; // 43 bytes total: 1 header + 40 data + 1 status + 1 footer
+    uint8_t packet[34];
     int i = 0;
 
     // Byte0: Header (0xAA)
@@ -340,18 +373,26 @@ void lora_transmit_packet(float alt, float lat, float lon, float strain)
     // Byte13-16: Accel X
     float_to_big_endian_bytes(strain, &packet[i]); i += 4;
 
+    float_to_big_endian_bytes(altitude, &packet[i]); i += 4;
+
+    float_to_big_endian_bytes(Temperature, &packet[i]); i += 4;
+
+    float_to_big_endian_bytes(Pressure, &packet[i]); i += 4;
+
+    float_to_big_endian_bytes(Humidity, &packet[i]); i += 4;
+
     // Byte38: Footer (0xFF)
     packet[i++] = 0xFF;
 
     // Add LoRa header (3 bytes)
-    uint8_t lora_packet[21];
+    uint8_t lora_packet[37];
     lora_packet[0] = TARGET_ADDR_HIGH;
     lora_packet[1] = TARGET_ADDR_LOW;
     lora_packet[2] = CHANNEL;
-    memcpy(&lora_packet[3], packet, 18);
+    memcpy(&lora_packet[3], packet, 34);
 
     // Transmit the complete packet (non-blocking, timeout küçük)
-    HAL_UART_Transmit(&huart3, lora_packet, 21, 50);
+    HAL_UART_Transmit(&huart3, lora_packet, 37, 50);
 }
 
 void float_to_big_endian_bytes(float value, uint8_t *buf) {
@@ -519,6 +560,13 @@ static void MX_GPIO_Init(void)
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	/*Configure GPIO pin : PA1 */
+	GPIO_InitStruct.Pin = GPIO_PIN_1;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* SPI_CS pin (PA4) */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);

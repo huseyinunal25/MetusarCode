@@ -1,4 +1,4 @@
-Core/Src/BME280_STM32.o: ../Core/Src/BME280_STM32.c \
+Core/Src/BME280_STM33.o: ../Core/Src/BME280_STM33.c \
  ../Core/Inc/BME280_STM32.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h \
  ../Core/Inc/stm32f1xx_hal_conf.h \
