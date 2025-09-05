@@ -236,6 +236,10 @@ class YerIstasyonu(QWidget):
         self.data_lat = []
         self.my_altitude = 0
         self.data_t = []
+        self.temp_payload_latitude = -1
+        self.temp2_payload_latitude = -1
+        self.temp3_payload_latitude = -1
+        self.temp4_payload_latitude = -1
 
         self.altitude = 0
         self.latitude = 0.0  # Enlem
@@ -989,6 +993,7 @@ class YerIstasyonu(QWidget):
         gorev_ws.cell(row = self.data_row, column = 1).value = self.payload_strain
         gorev_ws.cell(row = self.data_row, column = 2).value = self.payload_pressure
         gorev_ws.cell(row = self.data_row, column = 3).value = self.payload_temperature
+        gorev_ws.cell(row = self.data_row, column = 4).value = self.payload_rho
         gorev_ws.cell(row = self.data_row, column = 5).value = self.elapsed_time
         gorev_wb.save('C:/Users/kerem/Documents/GitHub/MetusarCode/gorev_yuku.xlsx')
         self.data_row += 1
@@ -1025,12 +1030,11 @@ class YerIstasyonu(QWidget):
         self.data_long = np.array(self.data_long)
         self.data_t = np.array(self.data_t)
 
-        n = len(self.data_lat)
-        a1 = (n*sum(self.data_t*self.data_lat) - sum(self.data_t)*sum(self.data_lat)) / (n*sum(self.data_t*self.data_t) - sum(self.data_t)**2) 
-        b1 = sum(self.data_lat)/n - a1*sum(self.data_t)/n
+        a1 = (self.n*sum(self.data_t*self.data_lat) - sum(self.data_t)*sum(self.data_lat)) / (self.n*sum(self.data_t*self.data_t) - sum(self.data_t)**2) 
+        b1 = sum(self.data_lat)/self.n - a1*sum(self.data_t)/self.n
 
-        a2 = (n*sum(self.data_t*self.data_long) - sum(self.data_t)*sum(self.data_long)) / (n*sum(self.data_t*self.data_t) - sum(self.data_t)**2)
-        b2 = sum(self.data_long)/n - a1*sum(self.data_t)/n
+        a2 = (self.n*sum(self.data_t*self.data_long) - sum(self.data_t)*sum(self.data_long)) / (self.n*sum(self.data_t*self.data_t) - sum(self.data_t)**2)
+        b2 = sum(self.data_long)/self.n - a1*sum(self.data_t)/self.n
 
         lat_coor = a1*self.t_dusus + b1
         long_coor = a2*self.t_dusus + b2
@@ -1104,16 +1108,37 @@ Basınç: {self.payload_pressure:.2f}
 Sıcaklık: {self.payload_temperature:.2f}
 Nem: {self.payload_humidity:.2f}""")
 
-        if self.payload_altitude > 2000:
-            if self.my_altitude < self.payload_altitude:
-                self.my_altitude = self.payload_altitude
-            
-            else:
-                self.data_long.append(self.payload_longitude)
-                self.data_lat.append(self.payload_latitude)
-                self.t_dusus = (self.my_altitude - self.y_lim) / self.v_lim
-                self.data_t.append(self.elapsed_time)
+        self.payload_rho = self.hava_yogunlugu()
+        
+        if self.temp4_payload_latitude != self.payload_latitude:
+            if self.payload_altitude > 2000:
+                if self.my_altitude < self.payload_altitude:
+                    self.my_altitude = self.payload_altitude
+                
+                else:
+                    self.data_long.append(self.payload_longitude)
+                    self.data_lat.append(self.payload_latitude)
+                    self.t_dusus = (self.my_altitude - self.y_lim) / self.v_lim
+                    self.data_t.append(self.elapsed_time)
+        else:
+            for i in range(len(self.data_t)):
+                self.data_t[i] = self.data_t[i] - self.data_t[0]
+            self.n = len(self.data_lat)
+            print(self.konumgy())
 
+        if self.payload_altitude > 2000:
+            if abs(self.temp3_payload_latitude - self.payload_latitude) < 0.1:
+                self.temp4_payload_latitude = self.payload_latitude
+            
+            if abs(self.temp2_payload_latitude - self.payload_latitude) < 0.1:
+                self.temp3_payload_latitude = self.payload_latitude
+                
+            if abs(self.temp_payload_latitude - self.payload_latitude) < 0.1:
+                self.temp2_payload_latitude = self.payload_latitude
+                
+            self.temp_payload_latitude = self.payload_latitude
+        
+        
         if self.payload_running:
             self.data_store()
         # Roket görselini güncelle
