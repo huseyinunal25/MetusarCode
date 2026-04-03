@@ -1,0 +1,6 @@
+../Core/Src/BMP280_I2C.c:28:6:TrimRead	48	static
+../Core/Src/BMP280_I2C.c:46:5:BMP280_Config	48	static
+../Core/Src/BMP280_I2C.c:90:5:BMP_ReadRaw	32	static
+../Core/Src/BMP280_I2C.c:105:6:BME280_WakeUP	32	static
+../Core/Src/BMP280_I2C.c:125:14:bmp280_compensate_T_int32	40	static
+../Core/Src/BMP280_I2C.c:138:14:bmp280_compensate_P_int64	320	static

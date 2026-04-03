@@ -60,8 +60,8 @@ all: main-build
 main-build: bme280_i2c2.elf secondary-outputs
 
 # Tool invocations
-bme280_i2c2.elf bme280_i2c2.map: $(OBJS) $(USER_OBJS) C:\Users\husey\STM32CubeIDE\workspace_1.18.0\bme280_i2c2\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "bme280_i2c2.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\husey\STM32CubeIDE\workspace_1.18.0\bme280_i2c2\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="bme280_i2c2.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+bme280_i2c2.elf bme280_i2c2.map: $(OBJS) $(USER_OBJS) C:\Users\Lenovo\OneDrive\Belgeler\GitHub\MetusarCode\bme280_i2c2\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "bme280_i2c2.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\Lenovo\OneDrive\Belgeler\GitHub\MetusarCode\bme280_i2c2\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="bme280_i2c2.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

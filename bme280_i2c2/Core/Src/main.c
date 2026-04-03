@@ -19,10 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include <stdio.h>
+#include <string.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "BME280_STM32.h"
-extern int32_t tRaw, pRaw, hRaw;
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -62,7 +63,6 @@ static void MX_USART3_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-float Temperature, Pressure, altitude;
 
 /* USER CODE END 0 */
 
@@ -99,7 +99,7 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  BME280_Config(OSRS_2, OSRS_2, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
+
 
   /* USER CODE END 2 */
 
@@ -110,37 +110,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  BME280_Measure();
-	  altitude = 44330 * (1- pow((Pressure/101325), (1/5.225)));
-	  HAL_Delay (500);
 
-	  static float previous_altitude = 0;  // İlk başta 0, bir kez ayarlanacak
-
-	  if ((previous_altitude - altitude) > 3.0f) {
-	      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET); // Aktif et
-	  } else {
-	      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // Pasif et
-	  }
-
-	  previous_altitude = altitude;  // Her döngü sonunda güncelle
-
-
-	  char buffer[100];
-		uint16_t len;
-
-		uint8_t hedef_adres_h = 0x00;
-		uint8_t hedef_adres_l = 0x02;
-		uint8_t kanal = 0x17;
-
-	        len = sprintf(buffer, "T: %.2f C, P: %.2f, A: %.2f m %%\r\n", Temperature, Pressure , altitude);
-
-	        uint8_t paket[3 + len];
-	        paket[0] = hedef_adres_h;
-	        paket[1] = hedef_adres_l;
-	        paket[2] = kanal;
-	        memcpy(&paket[3], buffer, len);
-
-	        HAL_UART_Transmit(&huart3, paket, 3 + len , HAL_MAX_DELAY);
   }
   /* USER CODE END 3 */
 }
